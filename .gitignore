@@ -1,0 +1,9 @@
+build/
+bin/
+
+*.o
+*.d
+
+*.log
+
+model/*.rknn
