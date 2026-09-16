@@ -104,71 +104,56 @@ typedef struct
 
 }RKNNEngine;
 
+/* 与当前 engine->output_attrs 的容量保持一致 */
+#define RKNN_ENGINE_MAX_OUTPUTS 10
+
+/* 单个输出，数据为 want_float=1 返回的浮点值 */
+typedef struct
+{
+    float *data;
+    int element_count;
+} RKNNOutputTensor;
+
+/* 一次推理的全部输出 */
+typedef struct
+{
+    int count;
+    RKNNOutputTensor tensors[RKNN_ENGINE_MAX_OUTPUTS];
+} RKNNInferenceResult;
 
 
-
-/*
- * 初始化RKNN推理引擎
- *
- * 参数：
- *
- * engine:
- *      RKNNEngine对象
- *
- * model_path:
- *      .rknn模型路径
- *
- */
 int rknn_engine_init(
         RKNNEngine *engine,
         const char *model_path);
 
 
-
-
 /*
- * 执行一次推理
- *
- * 输入：
- *
- * input_data:
- *      RGB图像数据
- *
- * size:
- *      数据大小
- *
- *
- * 输出：
- *
- * output_data:
- *      模型输出buffer
- *
- * output_size:
- *      输出数量
- *
+ * result 首次使用前必须清零。
+ * 再次推理前，必须释放上一次结果。
  */
 int rknn_engine_inference(
         RKNNEngine *engine,
         unsigned char *input_data,
         int input_size,
-        float **output_data,
-        int *output_size);
-
+        RKNNInferenceResult *result);
 
 
 
 /*
- * 释放RKNN资源
+ * 释放一次推理的全部输出，并清空结果。
+ */
+void rknn_engine_result_release(
+        RKNNInferenceResult *result);
+
+/*
+ * 释放模型和 RKNN 上下文。
  */
 void rknn_engine_release(
         RKNNEngine *engine);
 
 
-
 #ifdef __cplusplus
 }
 #endif
-
-
 
 #endif

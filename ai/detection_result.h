@@ -1,102 +1,58 @@
-/*
- * @file    detection_result.h
- * @brief   RK3588 AI视觉检测项目检测结果定义
- *
- * @author  zhangyong
- * @date    2026-09-14
- * @version 1.0
- *
- * @note
- *
- * 保存RKNN推理后的工业缺陷检测结果：
- *
- * RKNN Output
- *      |
- *      ↓
- * Postprocess
- *      |
- *      ↓
- * DetectionResult
- *
- */
-
-
-#ifndef DETECTION_RESULT_H
-#define DETECTION_RESULT_H
-
-
-
-// ==================== 缺陷类别数量 ====================
+#ifndef AI_DETECTION_RESULT_H
+#define AI_DETECTION_RESULT_H
 
 #define DETECT_CLASS_NUM 6
+#define MAX_DETECTION_NUM 100
 
-
-
-// ==================== 缺陷类别定义 ====================
-
+/*
+ * 类别顺序与 defect.yaml 一致。
+ */
 typedef enum
 {
+    DEFECT_CRAZING = 0,
+    DEFECT_INCLUSION,
+    DEFECT_PATCHES,
+    DEFECT_PITTED_SURFACE,
+    DEFECT_ROLLED_IN_SCALE,
+    DEFECT_SCRATCHES
+} DefectClass;
 
-    DEFECT_CRAZING = 0,          // 龟裂
-
-    DEFECT_INCLUSION,            // 夹杂
-
-    DEFECT_PATCHES,              // 补丁
-
-    DEFECT_PITTED_SURFACE,       // 点蚀表面
-
-    DEFECT_ROLLED_IN_SCALE,      // 氧化铁皮
-
-    DEFECT_SCRATCHES             // 划痕
-
-
-}DefectClass;
-
-
-
-
-
-// ==================== 单帧检测结果 ====================
-
+/*
+ * 单个缺陷框。
+ *
+ * 坐标位于摄像头原图坐标系。
+ * 使用浮点数保存，绘制时再转换为整数。
+ */
 typedef struct
 {
-
-    /*
-     * 最大概率对应类别
-     */
     int class_id;
-
-
-
-    /*
-     * 当前类别置信度
-     */
     float confidence;
 
+    float x1;
+    float y1;
+    float x2;
+    float y2;
+} DetectionBox;
 
+/*
+ * 一帧的检测结果。
+ *
+ * count == 0：没有通过筛选的检测框。
+ * 推理失败应由函数返回值表示，不用 count 表示。
+ */
+typedef struct
+{
+    int count;
+    DetectionBox boxes[MAX_DETECTION_NUM];
 
-    /*
-     * 是否检测到有效缺陷
-     *
-     * 0:
-     *      无效
-     *
-     * 1:
-     *      有效缺陷
-     */
-    int valid;
+    int image_width;
+    int image_height;
 
+    /* 对应输入帧的时间戳 */
+    long long pts;
 
-
-    /*
-     * NPU推理耗时(ms)
-     */
+    /* 推理接口调用耗时 */
     float inference_time_ms;
-
-
-
-}DetectionResult;
-
-
+} DetectionResult;
 
 #endif

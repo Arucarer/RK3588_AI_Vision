@@ -48,11 +48,13 @@ int image_resize_nv12_to_rgb(
     }
 
 
-    if(src->dma_fd < 0)
+    /*
+    * 当前使用 wrapbuffer_virtualaddr()，
+    * 数据来自摄像头帧的内存副本。
+    */
+    if(src->vir_addr == NULL)
     {
-        LOG_ERR("invalid source dma fd=%d",
-                src->dma_fd);
-
+        LOG_ERR("source virtual address is NULL");
         return -1;
     }
 

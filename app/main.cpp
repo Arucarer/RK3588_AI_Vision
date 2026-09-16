@@ -45,6 +45,15 @@
 #include "detection_result.h"
 #include "display.h"
 
+/*
+ * STB_IMAGE_IMPLEMENTATION 只能在一个 .cpp 中定义。
+ * 本次仅启用 JPG、PNG 解码。
+ */
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_MAX_DIMENSIONS 8192
+#include "../third_party/stb/stb_image.h"
 
 volatile sig_atomic_t g_run_state = RUN_STATE_OK;
 
@@ -58,10 +67,27 @@ static void signal_handler(int sig)
         RUN_STATE_EXIT;
 }
 
-
+/* 单图检测函数前置声明 */
+static int run_image_mode(
+        const char *model_path,
+        const char *image_path);
 
 int main(int argc,char *argv[])
 {
+    if(argc > 1 && strcmp(argv[1], "--image") == 0)
+    {
+        if(argc != 4)
+        {
+            fprintf(
+                stderr,
+                "Usage: %s --image model.rknn image.jpg\n",
+                argv[0]
+            );
+            return 1;
+        }
+
+        return run_image_mode(argv[2], argv[3]);
+    }
     int ret = -1;
     const char *model_path = "/opt/rk3588_ai/model/best.rknn";
 
@@ -82,8 +108,8 @@ int main(int argc,char *argv[])
 
 
 
-    float *output_data = NULL;
-    int output_size = 0;
+    RKNNInferenceResult inference_result = {};
+
 
     long frame_count = 0;
     long long last_time = get_time_us();
@@ -256,221 +282,184 @@ int main(int argc,char *argv[])
     );
 
 
-
-
-
     while(g_run_state == RUN_STATE_OK)
     {
-
-        frame_count++;
-        long long now = get_time_us();
-
-
-        if(now - last_time >= 1000000)
+        if(camera_buffer_pop(&frame) != 0)
         {
-
-            fps =
-                frame_count * 1000000.0 /
-                (now-last_time);
-
-
-            LOG_INFO(
-                "AI FPS = %.2f",
-                fps
-            );
-
-
-            frame_count = 0;
-
-            last_time = now;
-        }
-        if(camera_buffer_pop(
-                &frame) != 0)
-        {
-
             continue;
-
         }
 
+        const long long preprocess_start = get_time_us();
 
-        LOG_INFO(
-            "AI process frame index=%d pts=%lld",
-            frame.index,
-            (long long)frame.pts
+        if(preprocess_run(&frame, &processed_image) != 0)
+        {
+            LOG_ERR("preprocess failed");
+
+            preprocess_release(&processed_image);
+            camera_buffer_release(&frame);
+            continue;
+        }
+
+        const double preprocess_time =
+            (get_time_us() - preprocess_start) / 1000.0;
+
+        if(processed_image.rgb_width != engine.input_width ||
+        processed_image.rgb_height != engine.input_height ||
+        engine.input_channel != 3)
+        {
+            LOG_ERR("model input shape does not match preprocessing");
+
+            preprocess_release(&processed_image);
+            camera_buffer_release(&frame);
+            break;
+        }
+
+        /* 每帧从空结果开始，避免显示上一帧的框 */
+        memset(&detect_result, 0, sizeof(detect_result));
+
+        const long long inference_start = get_time_us();
+
+        const int inference_ret = rknn_engine_inference(
+            &engine,
+            processed_image.rgb,
+            MODEL_INPUT_SIZE,
+            &inference_result
         );
 
-        long long preprocess_start = get_time_us();
+        const double inference_time =
+            (get_time_us() - inference_start) / 1000.0;
 
-        if(preprocess_run(
-                &frame,
-                &processed_image) != 0)
+        int post_ret = -1;
+        double postprocess_time = 0.0;
+
+        if(inference_ret != 0)
         {
-            LOG_ERR(
-                "preprocess failed"
-            );
-
-            camera_buffer_release(
-                &frame
-            );
-
-            continue;
+            LOG_ERR("rknn inference failed");
         }
+        else
+        {
+            const long long postprocess_start = get_time_us();
 
-
-        long long preprocess_end = get_time_us();
-
-        double preprocess_time =
-            (preprocess_end - preprocess_start)/1000.0;
-
-
-        /*
-         * RK3588 NPU推理
-         */
-
-        long long inference_start = get_time_us();
-
-        if(rknn_engine_inference(
+            post_ret = postprocess_result(
                 &engine,
-                processed_image.rgb,
-                640 * 640 * 3,
-                &output_data,
-                &output_size) != 0)
-        {
-            LOG_ERR(
-                "rknn inference failed"
+                &inference_result,
+                &processed_image,
+                frame.pts,
+                0.25f,
+                0.45f,
+                &detect_result
             );
 
+            postprocess_time =
+                (get_time_us() - postprocess_start) / 1000.0;
 
-            if(processed_image.gray)
+            if(post_ret != 0)
             {
-                free(processed_image.gray);
-                processed_image.gray=NULL;
+                LOG_ERR("YOLO postprocess failed");
             }
-
-
-            if(processed_image.edge)
-            {
-                free(processed_image.edge);
-                processed_image.edge=NULL;
-            }
-
-
-            if(processed_image.rgb)
-            {
-                free(processed_image.rgb);
-                processed_image.rgb=NULL;
-            }
-
-
-            continue;
         }
-
-        long long inference_end = get_time_us();
-
-
-        double inference_time =
-            (inference_end - inference_start)/1000.0;
-
-
-
-        long long postprocess_start = get_time_us();
-
-
-        if(postprocess_result(
-                output_data,
-                output_size,
-                DETECT_CLASS_NUM,
-                &detect_result) != 0)
-        {
-
-            LOG_ERR(
-                "postprocess failed"
-            );
-
-
-            free(output_data);
-
-            output_data = NULL;
-
-
-            camera_buffer_release(
-                &frame
-            );
-
-
-            if(processed_image.gray)
-            {
-                free(processed_image.gray);
-                processed_image.gray = NULL;
-            }
-
-
-            if(processed_image.edge)
-            {
-                free(processed_image.edge);
-                processed_image.edge = NULL;
-            }
-
-
-            if(processed_image.rgb)
-            {
-                free(processed_image.rgb);
-                processed_image.rgb = NULL;
-            }
-
-            continue;
-        }
-
-
 
         /*
-        * postprocess之后再赋值
-        *
-        * 防止被memset清空
+        * 失败时仍可显示当前摄像头画面，但清空所有框。
+        * 日志中的返回值区分“检测失败”和“成功但无目标”。
         */
-        detect_result.inference_time_ms = inference_time;
+        if(inference_ret != 0 || post_ret != 0)
+        {
+            memset(&detect_result, 0, sizeof(detect_result));
+        }
 
-        display_show(
+        detect_result.image_width = frame.width;
+        detect_result.image_height = frame.height;
+        detect_result.pts = frame.pts;
+        detect_result.inference_time_ms = (float)inference_time;
+
+        const long long display_start = get_time_us();
+
+        const int display_ret = display_show(
             &frame,
             &detect_result
         );
 
-        long long postprocess_end = get_time_us();
+        const double display_time =
+            (get_time_us() - display_start) / 1000.0;
 
+        if(display_ret != 0)
+        {
+            LOG_ERR("display frame failed");
+        }
 
-        double postprocess_time =
-            (postprocess_end - postprocess_start)/1000.0;
+        /* 统计成功完成推理和后处理的帧 */
+        if(inference_ret == 0 && post_ret == 0)
+        {
+            frame_count++;
+        }
 
+        const long long now = get_time_us();
 
+        if(now - last_time >= 1000000)
+        {
+            fps = frame_count * 1000000.0 / (now - last_time);
 
-        /*
-         * 输出检测结果
-         */
-        LOG_INFO(
-            "detect result:"
-            " class=%d"
-            " confidence=%.3f"
-            " valid=%d"
-            " inference=%.2f ms"
-            " preprocess=%.2f ms"
-            " postprocess=%.2f ms",
-            detect_result.class_id,
-            detect_result.confidence,
-            detect_result.valid,
-            detect_result.inference_time_ms,
-            preprocess_time,
-            postprocess_time
-        );
+            LOG_INFO(
+                "detect FPS=%.2f boxes=%d "
+                "infer_ret=%d post_ret=%d "
+                "preprocess=%.2f ms inference=%.2f ms "
+                "postprocess=%.2f ms display=%.2f ms",
+                fps,
+                detect_result.count,
+                inference_ret,
+                post_ret,
+                preprocess_time,
+                inference_time,
+                postprocess_time,
+                display_time
+            );
 
+            static const char *class_names[DETECT_CLASS_NUM] =
+            {
+                "crazing",
+                "inclusion",
+                "patches",
+                "pitted_surface",
+                "rolled-in_scale",
+                "scratches"
+            };
 
-        free(output_data);
+            /* 每秒打印当前帧检测结果 */
+            for(int i = 0; i < detect_result.count; ++i)
+            {
+                const DetectionBox *box = &detect_result.boxes[i];
 
-        output_data = NULL;
+                const char *name = "unknown";
 
+                if(box->class_id >= 0 &&
+                box->class_id < DETECT_CLASS_NUM)
+                {
+                    name = class_names[box->class_id];
+                }
 
+                LOG_INFO(
+                    "box[%d] %s confidence=%.3f "
+                    "xyxy=(%.1f, %.1f, %.1f, %.1f)",
+                    i,
+                    name,
+                    box->confidence,
+                    box->x1,
+                    box->y1,
+                    box->x2,
+                    box->y2
+                );
+            }
+
+            frame_count = 0;
+            last_time = now;
+        }
+
+        /* 全部正常及推理失败路径统一释放 */
+        rknn_engine_result_release(&inference_result);
+        preprocess_release(&processed_image);
+        camera_buffer_release(&frame);
     }
-
-
 
 EXIT:
 
@@ -509,35 +498,15 @@ EXIT:
     }
 
 
-    /*
-     * 释放输出buffer
-     */
-
-    if(output_data)
-    {
-
-        free(output_data);
-
-        output_data = NULL;
-
-    }
-
-    if(processed_image.gray)
-    {
-        free(processed_image.gray);
-    }
 
 
-    if(processed_image.edge)
-    {
-        free(processed_image.edge);
-    }
+    /* 释放可能残留的推理输出 */
+    rknn_engine_result_release(&inference_result);
 
+    /* 释放可能残留的摄像头帧副本 */
+    camera_buffer_release(&frame);
 
-    if(processed_image.rgb)
-    {
-        free(processed_image.rgb);
-    }
+    preprocess_release(&processed_image);
 
 
 
@@ -609,4 +578,180 @@ EXIT:
 
 
     return 0;
+}
+
+static int run_image_mode(
+        const char *model_path,
+        const char *image_path)
+{
+    RKNNEngine engine = {};
+    RKNNInferenceResult inference = {};
+    ProcessedImage processed = {};
+    DetectionResult result = {};
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    /*
+     * 强制解码为 RGB 三通道。
+     * 即使原始图片是灰度图，也会输出三通道 RGB。
+     */
+    unsigned char *rgb = stbi_load(
+        image_path,
+        &width,
+        &height,
+        &channels,
+        3
+    );
+
+    if(rgb == NULL)
+    {
+        const char *reason = stbi_failure_reason();
+
+        LOG_ERR(
+            "load image failed: %s reason=%s",
+            image_path,
+            reason != NULL ? reason : "unknown"
+        );
+        return 1;
+    }
+
+    int status = 1;
+    bool engine_ready = false;
+
+    /*
+     * 用单次 do/while 统一处理失败清理。
+     */
+    do
+    {
+        LOG_INFO(
+            "image=%s width=%d height=%d source_channels=%d",
+            image_path,
+            width,
+            height,
+            channels
+        );
+
+        if(rknn_engine_init(&engine, model_path) != 0)
+        {
+            break;
+        }
+
+        engine_ready = true;
+
+        if(engine.input_width != MODEL_INPUT_WIDTH ||
+           engine.input_height != MODEL_INPUT_HEIGHT ||
+           engine.input_channel != 3)
+        {
+            LOG_ERR("image mode requires 640x640 RGB model input");
+            break;
+        }
+
+        if(preprocess_rgb(
+                rgb,
+                width,
+                height,
+                (size_t)width * height * 3,
+                &processed) != 0)
+        {
+            break;
+        }
+
+        LOG_INFO(
+            "letterbox resized=%dx%d pad=(%d,%d) scale=(%.6f,%.6f)",
+            processed.resized_width,
+            processed.resized_height,
+            processed.pad_left,
+            processed.pad_top,
+            processed.scale_x,
+            processed.scale_y
+        );
+
+        const long long start = get_time_us();
+
+        if(rknn_engine_inference(
+                &engine,
+                processed.rgb,
+                MODEL_INPUT_SIZE,
+                &inference) != 0)
+        {
+            break;
+        }
+
+        const double inference_ms =
+            (get_time_us() - start) / 1000.0;
+
+        if(postprocess_result(
+                &engine,
+                &inference,
+                &processed,
+                0,          // 单图没有摄像头时间戳
+                0.25f,
+                0.45f,
+                &result) != 0)
+        {
+            break;
+        }
+
+        result.inference_time_ms = (float)inference_ms;
+
+        static const char *names[DETECT_CLASS_NUM] =
+        {
+            "crazing",
+            "inclusion",
+            "patches",
+            "pitted_surface",
+            "rolled-in_scale",
+            "scratches"
+        };
+
+        LOG_INFO(
+            "image inference success: boxes=%d inference=%.2f ms",
+            result.count,
+            inference_ms
+        );
+
+        /*
+         * CSV 格式，坐标属于原始输入图片。
+         * PC 对照时也打印相同字段。
+         */
+        printf("class_id,class_name,confidence,x1,y1,x2,y2\n");
+
+        for(int i = 0; i < result.count; ++i)
+        {
+            const DetectionBox *box = &result.boxes[i];
+
+            const char *name =
+                box->class_id >= 0 &&
+                box->class_id < DETECT_CLASS_NUM
+                ? names[box->class_id]
+                : "unknown";
+
+            printf(
+                "%d,%s,%.6f,%.3f,%.3f,%.3f,%.3f\n",
+                box->class_id,
+                name,
+                box->confidence,
+                box->x1,
+                box->y1,
+                box->x2,
+                box->y2
+            );
+        }
+
+        status = 0;
+    }
+    while(false);
+
+    rknn_engine_result_release(&inference);
+    preprocess_release(&processed);
+    stbi_image_free(rgb);
+
+    if(engine_ready)
+    {
+        rknn_engine_release(&engine);
+    }
+
+    return status;
 }

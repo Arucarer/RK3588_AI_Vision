@@ -75,14 +75,6 @@ int rga_nv12_to_rgb(
             RK_FORMAT_YCbCr_420_SP
         );
 
-
-
-    /*
-     * 输出:
-     *
-     * RGB888
-     *
-     */
     rga_buffer_t dst =
         wrapbuffer_virtualaddr(
             dst_rgb,
@@ -90,9 +82,6 @@ int rga_nv12_to_rgb(
             dst_height,
             RK_FORMAT_RGB_888
         );
-
-
-
 
 
     IM_STATUS ret;
@@ -121,17 +110,8 @@ int rga_nv12_to_rgb(
         return -1;
 
     }
-
-
-
-
     return 0;
-
 }
-
-
-
-
 
 
 void rga_display_deinit()
