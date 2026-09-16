@@ -47,12 +47,12 @@ IMAGE_DIR   := image
 AI_DIR      := ai
 INCLUDE_DIR := include
 DISPLAY_DIR := display
-
+SYSTEM_DIR  := system
 
 BUILD_DIR := build
 BIN_DIR   := bin
 
-
+NETWORK_DIR := network
 
 # ==================== SDK ====================
 
@@ -125,8 +125,10 @@ INCLUDES := \
 -I$(IMAGE_DIR) \
 -I$(AI_DIR) \
 -I$(DISPLAY_DIR) \
+-I$(SYSTEM_DIR) \
 -I$(RKNN_INCLUDE) \
 -I$(RGA_INCLUDE) \
+-I$(NETWORK_DIR) \
 -I$(DRM_INCLUDE)
 
 
@@ -206,6 +208,7 @@ $(CAMERA_DIR)/camera_thread.c
 
 CPP_SRCS := \
 $(APP_DIR)/main.cpp \
+$(SYSTEM_DIR)/app_config.cpp \
 $(IMAGE_DIR)/preprocess.cpp \
 $(IMAGE_DIR)/resize.cpp \
 $(IMAGE_DIR)/color_convert.cpp \
@@ -217,6 +220,8 @@ $(AI_DIR)/rknn_engine.cpp \
 $(AI_DIR)/postprocess.cpp \
 $(DISPLAY_DIR)/display.cpp \
 $(DISPLAY_DIR)/drm_display.cpp \
+$(NETWORK_DIR)/tcp_client.cpp \
+$(NETWORK_DIR)/json_protocol.cpp \
 $(DISPLAY_DIR)/rga_display.cpp
 
 

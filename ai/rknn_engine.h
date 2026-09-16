@@ -58,36 +58,37 @@ extern "C" {
 
 // ==================== RKNN Engine结构 ====================
 
+/* 推理接口内部各阶段 */
+typedef enum
+{
+    RKNN_PERF_INPUT_SET = 0,
+    RKNN_PERF_RUN,
+    RKNN_PERF_OUTPUT_GET,
+    RKNN_PERF_OUTPUT_COPY,
+    RKNN_PERF_OUTPUT_RELEASE,
+    RKNN_PERF_COUNT
+} RKNNPerfStage;
+
+/*
+ * 最近一次推理的阶段耗时，单位 ms。
+ * -1 表示本次没有执行到该阶段。
+ * 已执行但失败的阶段，也保留耗时。
+ */
+typedef struct
+{
+    double ms[RKNN_PERF_COUNT];
+} RKNNInferencePerf;
 
 typedef struct
 {
 
-    /*
-     * RKNN Context
-     *
-     * 每一个模型对应一个context
-     */
+
     rknn_context ctx;
 
-
-
-    /*
-     * 模型输入数量
-     */
     int input_num;
 
-
-
-    /*
-     * 模型输出数量
-     */
     int output_num;
 
-
-
-    /*
-     * 输入尺寸信息
-     */
     int input_width;
 
     int input_height;
@@ -100,6 +101,8 @@ typedef struct
      * 输出tensor信息
      */
     rknn_tensor_attr output_attrs[10];
+    
+    RKNNInferencePerf last_perf;
 
 
 }RKNNEngine;

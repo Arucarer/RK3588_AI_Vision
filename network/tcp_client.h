@@ -1,20 +1,29 @@
 #ifndef TCP_CLIENT_H
 #define TCP_CLIENT_H
 
-#include <stddef.h>
+#include "detection_result.h"
 
-int tcp_client_init(const char *server_ip, int server_port); /* 初始化TCP客户端并连接服务器 */
+/*
+ * 启动后台线程。
+ * 服务器离线不会导致启动失败，后台自动重连。
+ *
+ * 只允许主线程调用 start/submit/stop。
+ */
+int tcp_client_start(
+        const char *server_ip,
+        int server_port,
+        const char *device_id);
 
-int tcp_client_send(const void *data, size_t len); /* 发送TCP数据 */
+/*
+ * 复制检测结果，不持有调用者的数据指针。
+ *
+ * 1：成功入队
+ * 0：队列已满，本次未入队
+ * -1：未启动或参数错误
+ */
+int tcp_client_submit(const DetectionResult *result);
 
-int tcp_client_recv(void *buf, size_t size); /* 接收TCP数据 */
-
-int tcp_client_is_connected(); /* 获取当前TCP连接状态 */
-
-int tcp_client_reconnect(); /* 断线重连，占位 */
-
-int tcp_client_send_heartbeat(); /* 心跳发送，占位 */
-
-void tcp_client_deinit(); /* 关闭TCP连接并释放资源 */
+/* 停止后台线程；未发送的内存队列会丢弃并打印数量 */
+void tcp_client_stop();
 
 #endif

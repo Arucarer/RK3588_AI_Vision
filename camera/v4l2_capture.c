@@ -373,7 +373,7 @@ void v4l2_deinit()
     for(unsigned int i = 0; i < g_buf_count; i++)
     {
 
-        if(g_bufs[i].start){
+        if(g_bufs[i].start != NULL && g_bufs[i].start != MAP_FAILED){
             munmap(g_bufs[i].start,g_bufs[i].length);
             g_bufs[i].start = NULL;
         }

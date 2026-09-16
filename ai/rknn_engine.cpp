@@ -488,6 +488,14 @@ int rknn_engine_inference(
         int input_size,
         RKNNInferenceResult *result)
 {
+    if(engine != NULL)
+    {
+        for(int i = 0; i < RKNN_PERF_COUNT; ++i)
+        {
+            engine->last_perf.ms[i] = -1.0;
+        }
+    }
+
     if(engine == NULL ||
        input_data == NULL ||
        result == NULL ||
@@ -576,11 +584,16 @@ int rknn_engine_inference(
     input.pass_through = 0;
     input.buf = input_data;
 
+    long long stage_started = monotonic_us();
+
     int ret = rknn_inputs_set(
         engine->ctx,
         1,
         &input
     );
+
+    engine->last_perf.ms[RKNN_PERF_INPUT_SET] =
+        (monotonic_us() - stage_started) / 1000.0;
 
     if(ret < 0)
     {
@@ -589,7 +602,11 @@ int rknn_engine_inference(
     }
 
     /* 2. 执行 NPU 推理 */
+    stage_started = monotonic_us();
+
     ret = rknn_run(engine->ctx, NULL);
+
+    engine->last_perf.ms[RKNN_PERF_RUN] = (monotonic_us() - stage_started) / 1000.0;
 
     if(ret < 0)
     {
@@ -612,12 +629,17 @@ int rknn_engine_inference(
         outputs[i].is_prealloc = 0;
     }
 
+    stage_started = monotonic_us();
+
     ret = rknn_outputs_get(
         engine->ctx,
         (unsigned int)engine->output_num,
         outputs,
         NULL
     );
+
+    engine->last_perf.ms[RKNN_PERF_OUTPUT_GET] =
+        (monotonic_us() - stage_started) / 1000.0;
 
     if(ret < 0)
     {
@@ -630,6 +652,7 @@ int rknn_engine_inference(
      * 全部复制成功并释放 Runtime 输出后，
      * 才将所有权交给调用者。
      */
+    stage_started = monotonic_us();
     RKNNInferenceResult copied_result;
     memset(&copied_result, 0, sizeof(copied_result));
 
@@ -677,16 +700,22 @@ int rknn_engine_inference(
 
         copied_result.count++;
     }
-
+    engine->last_perf.ms[RKNN_PERF_OUTPUT_COPY] =
+        (monotonic_us() - stage_started) / 1000.0;
     /*
      * 无论复制是否成功，
      * 都释放本次成功获取的 Runtime 输出。
      */
+    stage_started = monotonic_us();
+
     ret = rknn_outputs_release(
         engine->ctx,
         (unsigned int)engine->output_num,
         outputs
     );
+
+    engine->last_perf.ms[RKNN_PERF_OUTPUT_RELEASE] =
+        (monotonic_us() - stage_started) / 1000.0;
 
     if(ret < 0)
     {
