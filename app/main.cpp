@@ -1,29 +1,5 @@
-/*
- * @file    main.cpp
- * @brief   RK3588 AI视觉检测程序入口
- *
- * @author  zhangyong
- * @date    2026-09-14
- * @version 2.0
- *
- * @note
- *
- * 当前版本:
- *
- * 1. 加载RKNN模型
- * 2. 初始化RKNN Runtime
- * 3. 初始化图像预处理
- * 4. 初始化V4L2摄像头
- * 5. 创建Camera采集线程
- * 6. 获取最新Camera Buffer
- * 7. NV12转换RGB
- * 8. RK3588 NPU推理
- * 9. 缺陷分类后处理
- * 10. 输出缺陷类别和置信度
- * 11. Ctrl+C优雅退出
- *
- */
-
+/* RK3588 AI视觉检测程序入口 */
+/* @author  zhangyong | @date    2026-09-14 | @version 2.0 */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,10 +22,7 @@
 #include "detection_result.h"
 #include "display.h"
 #include "app_config.h"
-/*
- * STB_IMAGE_IMPLEMENTATION 只能在一个 .cpp 中定义。
- * 本次仅启用 JPG、PNG 解码。
- */
+/* STB_IMAGE_IMPLEMENTATION 只能在一个 .cpp 中定义。 仅启用 JPG、PNG 解码。 */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_PNG
@@ -58,7 +31,7 @@
 
 volatile sig_atomic_t g_run_state = RUN_STATE_OK;
 
-/* 0：关闭逐帧调试日志；后续接入配置 */
+/* 由 debug 配置控制逐帧日志，默认关闭。 */
 int g_debug_logs = 0;
 
 static void signal_handler(int sig)
@@ -66,14 +39,10 @@ static void signal_handler(int sig)
     (void)sig;
 
     g_run_state = RUN_STATE_EXIT;
-    
-    
 }
 
 /* 单图检测函数前置声明 */
-static int run_image_mode(
-        const char *model_path,
-        const char *image_path);
+static int run_image_mode(const char *model_path, const char *image_path);
 
 /* 单个处理阶段的统计 */
 struct StageStats
@@ -117,13 +86,9 @@ struct RuntimeStats
     StageStats stages[PERF_STAGE_COUNT];
 };
 
-static void record_stage(
-        RuntimeStats *stats,
-        PerfStage stage,
-        long long started_us)
+static void record_stage(RuntimeStats *stats, PerfStage stage, long long started_us)
 {
-    const double elapsed_ms =
-        (monotonic_us() - started_us) / 1000.0;
+    const double elapsed_ms = (monotonic_us() - started_us) / 1000.0;
 
     StageStats *item = &stats->stages[stage];
 
@@ -136,21 +101,11 @@ static void record_stage(
     }
 }
 
-
-
-
-static void record_inference_perf(
-        RuntimeStats *stats,
-        const RKNNInferencePerf *perf)
+static void record_inference_perf(RuntimeStats *stats, const RKNNInferencePerf *perf)
 {
-    static const PerfStage stage_map[RKNN_PERF_COUNT] =
-    {
-        PERF_RKNN_INPUT_SET,
-        PERF_RKNN_RUN,
-        PERF_RKNN_OUTPUT_GET,
-        PERF_RKNN_OUTPUT_COPY,
-        PERF_RKNN_OUTPUT_RELEASE
-    };
+    static const PerfStage stage_map[RKNN_PERF_COUNT] = {
+        PERF_RKNN_INPUT_SET, PERF_RKNN_RUN, PERF_RKNN_OUTPUT_GET, PERF_RKNN_OUTPUT_COPY,
+        PERF_RKNN_OUTPUT_RELEASE};
 
     for(int i = 0; i < RKNN_PERF_COUNT; ++i)
     {
@@ -174,25 +129,13 @@ static void record_inference_perf(
     }
 }
 
-
-
-
-
-
-
-
 /*
  * force=false：至少间隔一秒才输出。
  * force=true：退出前输出剩余统计。
- *
  * 各阶段统计包含失败调用；
  * 没有执行的阶段不计入调用次数。
  */
-static void report_stats(
-        RuntimeStats *stats,
-        int consecutive_errors,
-        bool force,
-        int interval_ms)
+static void report_stats(RuntimeStats *stats, int consecutive_errors, bool force, int interval_ms)
 {
     if(stats->started_us == 0)
     {
@@ -202,15 +145,12 @@ static void report_stats(
     const long long now = monotonic_us();
     const long long elapsed_us = now - stats->started_us;
 
-    if(elapsed_us <= 0 ||
-       (!force && elapsed_us < interval_ms * 1000LL))
+    if(elapsed_us <= 0 || (!force && elapsed_us < interval_ms * 1000LL))
     {
         return;
     }
 
-    if(force &&
-       stats->frames == 0 &&
-       stats->wait_timeouts == 0)
+    if(force && stats->frames == 0 && stats->wait_timeouts == 0)
     {
         return;
     }
@@ -218,34 +158,18 @@ static void report_stats(
     const double seconds = elapsed_us / 1000000.0;
     const double fps = stats->successful / seconds;
 
-    LOG_INFO(
-        "PERF window=%.2fs frames=%lu ok=%lu failed=%lu "
-        "wait_timeouts=%lu success_fps=%.2f consecutive_errors=%d",
-        seconds,
-        stats->frames,
-        stats->successful,
-        stats->failed,
-        stats->wait_timeouts,
-        fps,
-        consecutive_errors
-    );
+    LOG_INFO("PERF window=%.2fs frames=%lu ok=%lu failed=%lu "
+             "wait_timeouts=%lu success_fps=%.2f consecutive_errors=%d",
+             seconds, stats->frames, stats->successful, stats->failed, stats->wait_timeouts, fps,
+             consecutive_errors);
 
-    static const char *stage_names[PERF_STAGE_COUNT] =
-    {
-        "preprocess",
-        "inference",
+    static const char *stage_names[PERF_STAGE_COUNT] = {
+        "preprocess",          "inference",
 
-        "rknn_input_set",
-        "rknn_run",
-        "rknn_output_get",
-        "rknn_output_copy",
+        "rknn_input_set",      "rknn_run",  "rknn_output_get",  "rknn_output_copy",
         "rknn_output_release",
 
-        "postprocess",
-        "display",
-        "snapshot_enqueue",
-        "frame_process"
-    };
+        "postprocess",         "display",   "snapshot_enqueue", "frame_process"};
 
     for(int i = 0; i < PERF_STAGE_COUNT; ++i)
     {
@@ -257,45 +181,32 @@ static void report_stats(
             continue;
         }
 
-        LOG_INFO(
-            "PERF %s calls=%lu avg=%.2f ms max=%.2f ms",
-            stage_names[i],
-            item->calls,
-            item->sum_ms / item->calls,
-            item->max_ms
-        );
+        LOG_INFO("PERF %s calls=%lu avg=%.2f ms max=%.2f ms", stage_names[i], item->calls,
+                 item->sum_ms / item->calls, item->max_ms);
     }
 
-    LOG_INFO(
-        "PERF snapshot queued=%lu skipped=%lu failed=%lu",
-        stats->snapshot_queued,
-        stats->snapshot_skipped,
-        stats->snapshot_failed
-    );
+    LOG_INFO("PERF snapshot queued=%lu skipped=%lu failed=%lu", stats->snapshot_queued,
+             stats->snapshot_skipped, stats->snapshot_failed);
 
     memset(stats, 0, sizeof(*stats));
 
     /* 排除本次打印时间对下一周期起点的影响 */
     stats->started_us = monotonic_us();
-}        
+}
 
-int main(int argc,char *argv[])
+int main(int argc, char *argv[])
 {
     if(argc > 1 && strcmp(argv[1], "--image") == 0)
     {
         if(argc != 4)
         {
-            fprintf(
-                stderr,
-                "Usage: %s --image model.rknn image.jpg\n",
-                argv[0]
-            );
+            fprintf(stderr, "Usage: %s --image model.rknn image.jpg\n", argv[0]);
             return 1;
         }
 
         return run_image_mode(argv[2], argv[3]);
     }
-        AppConfig config;
+    AppConfig config;
     std::string config_error;
 
     if(argc == 3 && strcmp(argv[1], "--config") == 0)
@@ -315,18 +226,13 @@ int main(int argc,char *argv[])
     }
     else if(argc != 1)
     {
-        fprintf(
-            stderr,
-            "Usage:\n"
-            "  %s\n"
-            "  %s model.rknn\n"
-            "  %s --config app.conf\n"
-            "  %s --image model.rknn image.jpg\n",
-            argv[0],
-            argv[0],
-            argv[0],
-            argv[0]
-        );
+        fprintf(stderr,
+                "Usage:\n"
+                "  %s\n"
+                "  %s model.rknn\n"
+                "  %s --config app.conf\n"
+                "  %s --image model.rknn image.jpg\n",
+                argv[0], argv[0], argv[0], argv[0]);
 
         return 1;
     }
@@ -341,27 +247,16 @@ int main(int argc,char *argv[])
 
     LOG_INFO("CONFIG model=%s", config.model.c_str());
 
-    LOG_INFO(
-        "CONFIG confidence=%.3f nms=%.3f",
-        config.confidence,
-        config.nms
-    );
+    LOG_INFO("CONFIG confidence=%.3f nms=%.3f", config.confidence, config.nms);
 
-    LOG_INFO(
-        "CONFIG snapshot_enabled=%s dir=%s interval_ms=%d",
-        config.snapshot_enabled ? "true" : "false",
-        config.snapshot_dir.c_str(),
-        config.snapshot_interval_ms
-    );
+    LOG_INFO("CONFIG snapshot_enabled=%s dir=%s interval_ms=%d",
+             config.snapshot_enabled ? "true" : "false", config.snapshot_dir.c_str(),
+             config.snapshot_interval_ms);
 
-    LOG_INFO(
-        "CONFIG stats_interval_ms=%d camera_timeout_ms=%d "
-        "max_errors=%d debug=%s",
-        config.stats_interval_ms,
-        config.camera_timeout_ms,
-        config.max_errors,
-        config.debug ? "true" : "false"
-    );
+    LOG_INFO("CONFIG stats_interval_ms=%d camera_timeout_ms=%d "
+             "max_errors=%d debug=%s",
+             config.stats_interval_ms, config.camera_timeout_ms, config.max_errors,
+             config.debug ? "true" : "false");
     int ret = -1;
     /* 初始化失败默认返回错误，完成启动后改为成功 */
     int exit_code = 1;
@@ -395,8 +290,6 @@ int main(int argc,char *argv[])
     unsigned long network_dropped = 0;
     unsigned long network_submit_errors = 0;
 
-
-
     RKNNInferenceResult inference_result = {};
 
     /* 使用单调时钟计算间隔，不受系统时间调整影响 */
@@ -405,83 +298,46 @@ int main(int argc,char *argv[])
     RuntimeStats stats = {};
 
     int consecutive_errors = 0;
-        const int max_consecutive_errors = config.max_errors;
+    const int max_consecutive_errors = config.max_errors;
 
-
-    memset( &engine, 0, sizeof(engine));
+    memset(&engine, 0, sizeof(engine));
     memset(&processed_image, 0, sizeof(processed_image));
-    memset(&frame,0,sizeof(frame));
-    memset(&detect_result,0,sizeof(detect_result));
+    memset(&frame, 0, sizeof(frame));
+    memset(&detect_result, 0, sizeof(detect_result));
 
-    signal(SIGINT,signal_handler);
+    signal(SIGINT, signal_handler);
 
+    signal(SIGTERM, signal_handler);
 
-    signal(SIGTERM,signal_handler);
+    LOG_INFO("================================");
+    LOG_INFO("RK3588 AI Vision Start");
+    LOG_INFO("================================");
 
+    LOG_INFO("model:%s", model_path);
 
+    /* 1. RKNN初始化 */
 
-    LOG_INFO(
-        "================================"
-    );
-    LOG_INFO(
-        "RK3588 AI Vision Start"
-    );
-    LOG_INFO(
-        "================================"
-    );
-
-
-
-
-    LOG_INFO(
-        "model:%s",
-        model_path
-    );
-
-
-
-
-    /*
-     * 1. RKNN初始化
-     */
-
-
-    if(rknn_engine_init(
-            &engine,
-            model_path) != 0)
+    if(rknn_engine_init(&engine, model_path) != 0)
     {
-
-        LOG_ERR(
-            "rknn engine init failed"
-        );
+        LOG_ERR("rknn engine init failed");
 
         goto EXIT;
-
     }
 
-
     engine_initialized = 1;
-    /*
-     * 2. 初始化图像预处理
-     */
+    /* 2. 初始化图像预处理 */
 
     if(preprocess_init() != 0)
     {
-
-        LOG_ERR(
-            "preprocess init failed"
-        );
+        LOG_ERR("preprocess init failed");
 
         goto EXIT;
-
     }
     preprocess_initialized = 1;
 
     if(display_init() != 0)
     {
-        LOG_ERR(
-            "display init failed"
-        );
+        LOG_ERR("display init failed");
 
         goto EXIT;
     }
@@ -490,18 +346,12 @@ int main(int argc,char *argv[])
 
     if(config.network_enabled)
     {
-        LOG_INFO(
-            "TCP config server=%s:%d device=%s report_interval_ms=%d",
-            config.server_ip.c_str(),
-            config.server_port,
-            config.device_id.c_str(),
-            config.report_interval_ms
-        );
+        LOG_INFO("TCP config server=%s:%d device=%s report_interval_ms=%d",
+                 config.server_ip.c_str(), config.server_port, config.device_id.c_str(),
+                 config.report_interval_ms);
 
-        if(tcp_client_start(
-                config.server_ip.c_str(),
-                config.server_port,
-                config.device_id.c_str()) != 0)
+        if(tcp_client_start(config.server_ip.c_str(), config.server_port,
+                            config.device_id.c_str()) != 0)
         {
             LOG_ERR("TCP worker initialization failed");
             goto EXIT;
@@ -510,81 +360,42 @@ int main(int argc,char *argv[])
         network_initialized = 1;
     }
 
-
-    /*
-     * 3. 初始化Camera Buffer
-     */
+    /* 3. 初始化Camera Buffer */
 
     if(camera_buffer_init() != 0)
     {
-
-        LOG_ERR(
-            "camera buffer init failed"
-        );
+        LOG_ERR("camera buffer init failed");
 
         goto EXIT;
-
     }
-
 
     camera_buffer_initialized = 1;
 
-
-
-
-    /*
-     * 4. 初始化V4L2摄像头
-     */
+    /* 4. 初始化V4L2摄像头 */
 
     if(v4l2_init() != 0)
     {
-
-        LOG_ERR(
-            "v4l2 init failed"
-        );
+        LOG_ERR("v4l2 init failed");
 
         goto EXIT;
-
     }
-
 
     v4l2_initialized = 1;
 
+    /* 5. 创建摄像头采集线程 */
 
-
-
-    /*
-     * 5. 创建摄像头采集线程
-     */
-
-    ret =
-        pthread_create(
-            &camera_tid,
-            NULL,
-            camera_thread,
-            NULL
-        );
-
+    ret = pthread_create(&camera_tid, NULL, camera_thread, NULL);
 
     if(ret != 0)
     {
-
-        LOG_ERR(
-            "create camera thread failed"
-        );
+        LOG_ERR("create camera thread failed");
 
         goto EXIT;
-
     }
-
 
     camera_thread_created = 1;
 
-
-
-    LOG_INFO(
-        "camera thread start"
-    );
+    LOG_INFO("camera thread start");
 
     exit_code = 0;
     last_frame_us = monotonic_us();
@@ -615,20 +426,11 @@ int main(int argc,char *argv[])
         {
             stats.wait_timeouts++;
 
-            report_stats(
-                &stats,
-                consecutive_errors,
-                false,
-                config.stats_interval_ms
-            );
+            report_stats(&stats, consecutive_errors, false, config.stats_interval_ms);
 
-            if(monotonic_us() - last_frame_us >=
-               config.camera_timeout_ms * 1000LL)
+            if(monotonic_us() - last_frame_us >= config.camera_timeout_ms * 1000LL)
             {
-                LOG_ERR(
-                    "camera timeout: no frame for %d ms",
-                    config.camera_timeout_ms
-                );
+                LOG_ERR("camera timeout: no frame for %d ms", config.camera_timeout_ms);
 
                 exit_code = 1;
                 break;
@@ -640,10 +442,10 @@ int main(int argc,char *argv[])
         last_frame_us = monotonic_us();
 
         /*
-        * frame_process：
-        * 从取得帧后开始，到释放本帧资源结束。
-        * 不包含等待摄像头、后台JPEG保存、统计日志打印。
-        */
+         * frame_process：
+         * 从取得帧后开始，到释放本帧资源结束。
+         * 不包含等待摄像头、后台JPEG保存、统计日志打印。
+         */
         const long long frame_started = monotonic_us();
 
         stats.frames++;
@@ -654,10 +456,7 @@ int main(int argc,char *argv[])
 
         memset(&detect_result, 0, sizeof(detect_result));
 
-        /*
-        * 单次 do/while：
-        * 任一阶段失败后跳到统一清理位置。
-        */
+        /* 单次 do/while： 任一阶段失败后跳到统一清理位置。 */
         do
         {
             /* 1. 预处理 */
@@ -665,29 +464,18 @@ int main(int argc,char *argv[])
 
             const long long preprocess_started = monotonic_us();
 
-            const int preprocess_ret = preprocess_run(
-                &frame,
-                &processed_image
-            );
+            const int preprocess_ret = preprocess_run(&frame, &processed_image);
 
-            record_stage(
-                &stats,
-                PERF_PREPROCESS,
-                preprocess_started
-            );
+            record_stage(&stats, PERF_PREPROCESS, preprocess_started);
 
             if(preprocess_ret != 0)
             {
                 break;
             }
 
-            /*
-            * 模型与预处理尺寸不匹配属于配置错误，
-            * 无需重复尝试10帧。
-            */
+            /* 模型与预处理尺寸不匹配属于配置错误， 无需重复尝试10帧。 */
             if(processed_image.rgb_width != engine.input_width ||
-            processed_image.rgb_height != engine.input_height ||
-            engine.input_channel != 3)
+               processed_image.rgb_height != engine.input_height || engine.input_channel != 3)
             {
                 failed_stage = "input_shape";
                 fatal_error = true;
@@ -700,25 +488,14 @@ int main(int argc,char *argv[])
 
             const long long inference_started = monotonic_us();
 
-            const int inference_ret = rknn_engine_inference(
-                &engine,
-                processed_image.rgb,
-                MODEL_INPUT_SIZE,
-                &inference_result
-            );
+            const int inference_ret = rknn_engine_inference(&engine, processed_image.rgb,
+                                                            MODEL_INPUT_SIZE, &inference_result);
 
             const double inference_ms = (monotonic_us() - inference_started) / 1000.0;
 
-            record_stage(
-                &stats,
-                PERF_INFERENCE,
-                inference_started
-            );
+            record_stage(&stats, PERF_INFERENCE, inference_started);
 
-            record_inference_perf(
-                &stats,
-                &engine.last_perf
-            );
+            record_inference_perf(&stats, &engine.last_perf);
 
             if(inference_ret != 0)
             {
@@ -730,21 +507,11 @@ int main(int argc,char *argv[])
 
             const long long postprocess_started = monotonic_us();
 
-            const int post_ret = postprocess_result(
-                &engine,
-                &inference_result,
-                &processed_image,
-                frame.pts,
-                config.confidence,
-                config.nms,
-                &detect_result
-            );
+            const int post_ret =
+                postprocess_result(&engine, &inference_result, &processed_image, frame.pts,
+                                   config.confidence, config.nms, &detect_result);
 
-            record_stage(
-                &stats,
-                PERF_POSTPROCESS,
-                postprocess_started
-            );
+            record_stage(&stats, PERF_POSTPROCESS, postprocess_started);
 
             if(post_ret != 0)
             {
@@ -761,43 +528,27 @@ int main(int argc,char *argv[])
 
             const long long display_started = monotonic_us();
 
-            const int display_ret = display_show(
-                &frame,
-                &detect_result
-            );
+            const int display_ret = display_show(&frame, &detect_result);
 
-            record_stage(
-                &stats,
-                PERF_DISPLAY,
-                display_started
-            );
+            record_stage(&stats, PERF_DISPLAY, display_started);
 
             if(display_ret != 0)
             {
                 break;
             }
 
-            /*
-            * 检测和显示都成功，即完成一帧核心业务。
-            * 抓拍提交失败不会将本帧判定为检测失败。
-            */
+            /* 检测和显示都成功，即完成一帧核心业务。 抓拍提交失败不会将本帧判定为检测失败。 */
             frame_ok = true;
-            /*
-             * 周期采样上报。
-             * 这里只复制 DetectionResult，不进行网络发送。
-             */
+            /* 周期采样上报。 这里只复制 DetectionResult，不进行网络发送。 */
             if(network_initialized)
             {
                 const long long now_ms = monotonic_us() / 1000;
 
-                if(last_report_ms < 0 ||
-                   now_ms - last_report_ms >=
-                   config.report_interval_ms)
+                if(last_report_ms < 0 || now_ms - last_report_ms >= config.report_interval_ms)
                 {
                     last_report_ms = now_ms;
 
-                    const int submitted =
-                        tcp_client_submit(&detect_result);
+                    const int submitted = tcp_client_submit(&detect_result);
 
                     if(submitted > 0)
                     {
@@ -807,10 +558,7 @@ int main(int argc,char *argv[])
                     {
                         network_dropped++;
 
-                        LOG_INFO(
-                            "TCP queue full; dropped_total=%lu",
-                            network_dropped
-                        );
+                        LOG_INFO("TCP queue full; dropped_total=%lu", network_dropped);
                     }
                     else
                     {
@@ -826,23 +574,16 @@ int main(int argc,char *argv[])
                 const long long now_ms = monotonic_us() / 1000;
 
                 if(last_snapshot_attempt_ms < 0 ||
-                   now_ms - last_snapshot_attempt_ms >=
-                   config.snapshot_interval_ms)
+                   now_ms - last_snapshot_attempt_ms >= config.snapshot_interval_ms)
                 {
                     last_snapshot_attempt_ms = now_ms;
 
                     const long long enqueue_started = monotonic_us();
 
                     const int queued = display_save_snapshot(
-                        config.snapshot_dir.c_str(),
-                        detect_result.pts
-                    );
+                        config.snapshot_dir.c_str(), config.device_id.c_str(), &detect_result);
 
-                    record_stage(
-                        &stats,
-                        PERF_ENQUEUE,
-                        enqueue_started
-                    );
+                    record_stage(&stats, PERF_ENQUEUE, enqueue_started);
 
                     if(queued > 0)
                     {
@@ -860,39 +601,23 @@ int main(int argc,char *argv[])
                 }
             }
 
-            /*
-            * 检测框详情改为调试日志。
-            * g_debug_logs=0 时不打印，HDMI文字仍正常显示。
-            */
+            /* 检测框详情改为调试日志。 g_debug_logs=0 时不打印，HDMI文字仍正常显示。 */
             for(int i = 0; i < detect_result.count; ++i)
             {
                 const DetectionBox *box = &detect_result.boxes[i];
 
-                LOG_DEBUG(
-                    "box[%d] class=%d confidence=%.3f "
-                    "xyxy=(%.1f,%.1f,%.1f,%.1f)",
-                    i,
-                    box->class_id,
-                    box->confidence,
-                    box->x1,
-                    box->y1,
-                    box->x2,
-                    box->y2
-                );
+                LOG_DEBUG("box[%d] class=%d confidence=%.3f "
+                          "xyxy=(%.1f,%.1f,%.1f,%.1f)",
+                          i, box->class_id, box->confidence, box->x1, box->y1, box->x2, box->y2);
             }
-        }
-        while(false);
+        } while(false);
 
         /* 各阶段成功或失败，都经过这里清理 */
         rknn_engine_result_release(&inference_result);
         preprocess_release(&processed_image);
         camera_buffer_release(&frame);
 
-        record_stage(
-            &stats,
-            PERF_PROCESS,
-            frame_started
-        );
+        record_stage(&stats, PERF_PROCESS, frame_started);
 
         if(frame_ok)
         {
@@ -904,23 +629,13 @@ int main(int argc,char *argv[])
             stats.failed++;
             consecutive_errors++;
 
-            LOG_ERR(
-                "frame failed stage=%s consecutive=%d/%d",
-                failed_stage,
-                consecutive_errors,
-                max_consecutive_errors
-            );
+            LOG_ERR("frame failed stage=%s consecutive=%d/%d", failed_stage, consecutive_errors,
+                    max_consecutive_errors);
         }
 
-        report_stats(
-            &stats,
-            consecutive_errors,
-            false,
-            config.stats_interval_ms
-        );
+        report_stats(&stats, consecutive_errors, false, config.stats_interval_ms);
 
-        if(fatal_error ||
-        consecutive_errors >= max_consecutive_errors)
+        if(fatal_error || consecutive_errors >= max_consecutive_errors)
         {
             LOG_ERR("stopping after unrecoverable/repeated processing errors");
             exit_code = 1;
@@ -929,21 +644,11 @@ int main(int argc,char *argv[])
     }
 
     /* 正常退出或异常退出前，输出不足一秒的剩余统计 */
-    report_stats(
-        &stats,
-        consecutive_errors,
-        true,
-        config.stats_interval_ms
-    );
-    
+    report_stats(&stats, consecutive_errors, true, config.stats_interval_ms);
+
 EXIT:
 
-
-    LOG_INFO(
-        "AI application exit"
-    );
-
-
+    LOG_INFO("AI application exit");
 
     g_run_state = RUN_STATE_EXIT;
 
@@ -965,21 +670,14 @@ EXIT:
         tcp_client_stop();
         network_initialized = 0;
 
-        LOG_INFO(
-            "TCP submit totals queued=%lu dropped=%lu errors=%lu",
-            network_queued,
-            network_dropped,
-            network_submit_errors
-        );
+        LOG_INFO("TCP submit totals queued=%lu dropped=%lu errors=%lu", network_queued,
+                 network_dropped, network_submit_errors);
     }
 
     if(display_initialized)
     {
         display_deinit();
     }
-
-
-
 
     /* 释放可能残留的推理输出 */
     rknn_engine_result_release(&inference_result);
@@ -989,38 +687,31 @@ EXIT:
 
     preprocess_release(&processed_image);
 
-    if(v4l2_initialized){
-
+    if(v4l2_initialized)
+    {
         v4l2_deinit();
-
     }
 
     if(camera_buffer_initialized)
     {
-
         camera_buffer_deinit();
     }
 
-    if(preprocess_initialized){
+    if(preprocess_initialized)
+    {
         preprocess_deinit();
     }
 
-
-    if(engine_initialized){
-        rknn_engine_release(
-            &engine
-        );
+    if(engine_initialized)
+    {
+        rknn_engine_release(&engine);
     }
 
-    LOG_INFO(
-        "RK3588 AI Vision stopped"
-    );
+    LOG_INFO("RK3588 AI Vision stopped");
     return exit_code;
 }
 
-static int run_image_mode(
-        const char *model_path,
-        const char *image_path)
+static int run_image_mode(const char *model_path, const char *image_path)
 {
     RKNNEngine engine = {};
     RKNNInferenceResult inference = {};
@@ -1031,45 +722,25 @@ static int run_image_mode(
     int height = 0;
     int channels = 0;
 
-    /*
-     * 强制解码为 RGB 三通道。
-     * 即使原始图片是灰度图，也会输出三通道 RGB。
-     */
-    unsigned char *rgb = stbi_load(
-        image_path,
-        &width,
-        &height,
-        &channels,
-        3
-    );
+    /* 强制解码为 RGB 三通道。 即使原始图片是灰度图，也会输出三通道 RGB。 */
+    unsigned char *rgb = stbi_load(image_path, &width, &height, &channels, 3);
 
     if(rgb == NULL)
     {
         const char *reason = stbi_failure_reason();
 
-        LOG_ERR(
-            "load image failed: %s reason=%s",
-            image_path,
-            reason != NULL ? reason : "unknown"
-        );
+        LOG_ERR("load image failed: %s reason=%s", image_path, reason != NULL ? reason : "unknown");
         return 1;
     }
 
     int status = 1;
     bool engine_ready = false;
 
-    /*
-     * 用单次 do/while 统一处理失败清理。
-     */
+    /* 用单次 do/while 统一处理失败清理。 */
     do
     {
-        LOG_INFO(
-            "image=%s width=%d height=%d source_channels=%d",
-            image_path,
-            width,
-            height,
-            channels
-        );
+        LOG_INFO("image=%s width=%d height=%d source_channels=%d", image_path, width, height,
+                 channels);
 
         if(rknn_engine_init(&engine, model_path) != 0)
         {
@@ -1078,109 +749,62 @@ static int run_image_mode(
 
         engine_ready = true;
 
-        if(engine.input_width != MODEL_INPUT_WIDTH ||
-           engine.input_height != MODEL_INPUT_HEIGHT ||
+        if(engine.input_width != MODEL_INPUT_WIDTH || engine.input_height != MODEL_INPUT_HEIGHT ||
            engine.input_channel != 3)
         {
             LOG_ERR("image mode requires 640x640 RGB model input");
             break;
         }
 
-        if(preprocess_rgb(
-                rgb,
-                width,
-                height,
-                (size_t)width * height * 3,
-                &processed) != 0)
+        if(preprocess_rgb(rgb, width, height, (size_t)width * height * 3, &processed) != 0)
         {
             break;
         }
 
-        LOG_INFO(
-            "letterbox resized=%dx%d pad=(%d,%d) scale=(%.6f,%.6f)",
-            processed.resized_width,
-            processed.resized_height,
-            processed.pad_left,
-            processed.pad_top,
-            processed.scale_x,
-            processed.scale_y
-        );
+        LOG_INFO("letterbox resized=%dx%d pad=(%d,%d) scale=(%.6f,%.6f)", processed.resized_width,
+                 processed.resized_height, processed.pad_left, processed.pad_top, processed.scale_x,
+                 processed.scale_y);
 
         const long long start = monotonic_us();
 
-        if(rknn_engine_inference(
-                &engine,
-                processed.rgb,
-                MODEL_INPUT_SIZE,
-                &inference) != 0)
+        if(rknn_engine_inference(&engine, processed.rgb, MODEL_INPUT_SIZE, &inference) != 0)
         {
             break;
         }
 
-        const double inference_ms =
-            (monotonic_us() - start) / 1000.0;
+        const double inference_ms = (monotonic_us() - start) / 1000.0;
 
-        if(postprocess_result(
-                &engine,
-                &inference,
-                &processed,
-                0,          // 单图没有摄像头时间戳
-                0.25f,
-                0.45f,
-                &result) != 0)
+        if(postprocess_result(&engine, &inference, &processed,
+                              0, // 单图没有摄像头时间戳
+                              0.25f, 0.45f, &result) != 0)
         {
             break;
         }
 
         result.inference_time_ms = (float)inference_ms;
 
-        static const char *names[DETECT_CLASS_NUM] =
-        {
-            "crazing",
-            "inclusion",
-            "patches",
-            "pitted_surface",
-            "rolled-in_scale",
-            "scratches"
-        };
+        static const char *names[DETECT_CLASS_NUM] = {
+            "crazing", "inclusion", "patches", "pitted_surface", "rolled-in_scale", "scratches"};
 
-        LOG_INFO(
-            "image inference success: boxes=%d inference=%.2f ms",
-            result.count,
-            inference_ms
-        );
+        LOG_INFO("image inference success: boxes=%d inference=%.2f ms", result.count, inference_ms);
 
-        /*
-         * CSV 格式，坐标属于原始输入图片。
-         * PC 对照时也打印相同字段。
-         */
+        /* CSV 格式，坐标属于原始输入图片。 PC 对照时也打印相同字段。 */
         printf("class_id,class_name,confidence,x1,y1,x2,y2\n");
 
         for(int i = 0; i < result.count; ++i)
         {
             const DetectionBox *box = &result.boxes[i];
 
-            const char *name =
-                box->class_id >= 0 &&
-                box->class_id < DETECT_CLASS_NUM
-                ? names[box->class_id]
-                : "unknown";
+            const char *name = box->class_id >= 0 && box->class_id < DETECT_CLASS_NUM
+                                   ? names[box->class_id]
+                                   : "unknown";
 
-            printf(
-                "%d,%s,%.6f,%.3f,%.3f,%.3f,%.3f\n",
-                box->class_id,
-                name,
-                box->confidence,
-                box->x1,
-                box->y1,
-                box->x2,
-                box->y2
-            );
+            printf("%d,%s,%.6f,%.3f,%.3f,%.3f,%.3f\n", box->class_id, name, box->confidence,
+                   box->x1, box->y1, box->x2, box->y2);
         }
 
         status = 0;
-    }
-    while(false);
+    } while(false);
 
     rknn_engine_result_release(&inference);
     preprocess_release(&processed);

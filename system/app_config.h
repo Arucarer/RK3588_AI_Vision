@@ -5,16 +5,14 @@
 
 struct AppConfig
 {
-    std::string model =
-        "/opt/rk3588_ai/model/best_fp16.rknn";
+    std::string model = "/opt/rk3588_ai/model/best_fp16.rknn";
 
     float confidence = 0.25f;
     float nms = 0.45f;
 
     bool snapshot_enabled = true;
 
-    std::string snapshot_dir =
-        "/opt/rk3588_ai/captures";
+    std::string snapshot_dir = "/opt/rk3588_ai/captures";
 
     int snapshot_interval_ms = 5000;
 
@@ -23,7 +21,7 @@ struct AppConfig
     int max_errors = 10;
 
     bool debug = false;
-    
+
     bool network_enabled = false;
     std::string server_ip = "127.0.0.1";
     int server_port = 9000;
@@ -34,18 +32,13 @@ struct AppConfig
 };
 
 /* 检查配置内容和数值范围 */
-bool validate_config(
-        const AppConfig &config,
-        std::string &error);
+bool validate_config(const AppConfig &config, std::string &error);
 
 /*
  * 读取 key=value 配置文件。
  * 未填写的参数保留传入配置的值。
  * 读取或校验失败时，不修改传入配置。
  */
-bool load_config(
-        const char *path,
-        AppConfig &config,
-        std::string &error);
+bool load_config(const char *path, AppConfig &config, std::string &error);
 
 #endif

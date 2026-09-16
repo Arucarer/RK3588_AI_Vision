@@ -45,15 +45,10 @@ int camera_buffer_init(void)
     return 0;
 }
 
-/*
- * 只复制图像。
- * 成功或失败后，调用者均负责归还 V4L2 缓冲区。
- */
+/* 只复制图像。 成功或失败后，调用者均负责归还 V4L2 缓冲区。 */
 int camera_buffer_push(FrameData *frame)
 {
-    if(frame == NULL ||
-       frame->vir_addr == NULL ||
-       frame->len <= 0)
+    if(frame == NULL || frame->vir_addr == NULL || frame->len <= 0)
     {
         return -1;
     }
@@ -119,11 +114,7 @@ int camera_buffer_pop(FrameData *frame)
 
     while(!g_frame_ready && !g_stopped)
     {
-        const int ret = pthread_cond_timedwait(
-            &g_cond,
-            &g_mutex,
-            &deadline
-        );
+        const int ret = pthread_cond_timedwait(&g_cond, &g_mutex, &deadline);
 
         if(ret == ETIMEDOUT)
         {

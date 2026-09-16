@@ -17,7 +17,6 @@
 
 namespace
 {
-
 const size_t QUEUE_CAPACITY = 32;
 const int IO_TIMEOUT_MS = 3000;
 const int RETRY_INTERVAL_MS = 2000;
@@ -47,13 +46,10 @@ unsigned long long next_sequence = 0;
 
 bool valid_identifier(const std::string &value)
 {
-    return !value.empty() &&
-           value.size() <= 64 &&
-           value.find_first_not_of(
-               "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-               "abcdefghijklmnopqrstuvwxyz"
-               "0123456789_-"
-           ) == std::string::npos;
+    return !value.empty() && value.size() <= 64 &&
+           value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                   "abcdefghijklmnopqrstuvwxyz"
+                                   "0123456789_-") == std::string::npos;
 }
 
 std::string make_id(unsigned long long sequence)
@@ -64,8 +60,7 @@ std::string make_id(unsigned long long sequence)
 /* 最多每 100 ms 检查一次停止标志 */
 void interruptible_delay(int milliseconds)
 {
-    const long long deadline =
-        monotonic_us() + milliseconds * 1000LL;
+    const long long deadline = monotonic_us() + milliseconds * 1000LL;
 
     while(!stopping.load())
     {
@@ -76,9 +71,7 @@ void interruptible_delay(int milliseconds)
             break;
         }
 
-        const int wait_ms =
-            remaining > 100000 ? 100 :
-            static_cast<int>((remaining + 999) / 1000);
+        const int wait_ms = remaining > 100000 ? 100 : static_cast<int>((remaining + 999) / 1000);
 
         poll(NULL, 0, wait_ms);
     }
@@ -96,9 +89,7 @@ bool wait_socket(int fd, short events, long long deadline)
             return false;
         }
 
-        const int wait_ms =
-            remaining > 100000 ? 100 :
-            static_cast<int>((remaining + 999) / 1000);
+        const int wait_ms = remaining > 100000 ? 100 : static_cast<int>((remaining + 999) / 1000);
 
         struct pollfd item;
         item.fd = fd;
@@ -139,11 +130,7 @@ bool wait_socket(int fd, short events, long long deadline)
 
 int connect_server()
 {
-    const int fd = socket(
-        AF_INET,
-        SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
-        0
-    );
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 
     if(fd < 0)
     {
@@ -154,20 +141,13 @@ int connect_server()
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<uint16_t>(server_port));
 
-    if(inet_pton(
-            AF_INET,
-            server_ip.c_str(),
-            &address.sin_addr) != 1)
+    if(inet_pton(AF_INET, server_ip.c_str(), &address.sin_addr) != 1)
     {
         close(fd);
         return -1;
     }
 
-    const int ret = connect(
-        fd,
-        reinterpret_cast<struct sockaddr *>(&address),
-        sizeof(address)
-    );
+    const int ret = connect(fd, reinterpret_cast<struct sockaddr *>(&address), sizeof(address));
 
     if(ret < 0)
     {
@@ -177,8 +157,7 @@ int connect_server()
             return -1;
         }
 
-        const long long deadline =
-            monotonic_us() + IO_TIMEOUT_MS * 1000LL;
+        const long long deadline = monotonic_us() + IO_TIMEOUT_MS * 1000LL;
 
         if(!wait_socket(fd, POLLOUT, deadline))
         {
@@ -189,10 +168,7 @@ int connect_server()
         int error = 0;
         socklen_t length = sizeof(error);
 
-        if(getsockopt(
-                fd, SOL_SOCKET, SO_ERROR,
-                &error, &length) < 0 ||
-           error != 0)
+        if(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) < 0 || error != 0)
         {
             close(fd);
             return -1;
@@ -202,14 +178,9 @@ int connect_server()
     return fd;
 }
 
-bool send_all(
-        int fd,
-        const void *data,
-        size_t size,
-        long long deadline)
+bool send_all(int fd, const void *data, size_t size, long long deadline)
 {
-    const unsigned char *bytes =
-        static_cast<const unsigned char *>(data);
+    const unsigned char *bytes = static_cast<const unsigned char *>(data);
 
     size_t sent = 0;
 
@@ -220,12 +191,7 @@ bool send_all(
             return false;
         }
 
-        const ssize_t count = send(
-            fd,
-            bytes + sent,
-            size - sent,
-            MSG_NOSIGNAL
-        );
+        const ssize_t count = send(fd, bytes + sent, size - sent, MSG_NOSIGNAL);
 
         if(count > 0)
         {
@@ -233,10 +199,7 @@ bool send_all(
             continue;
         }
 
-        if(count < 0 &&
-           (errno == EINTR ||
-            errno == EAGAIN ||
-            errno == EWOULDBLOCK))
+        if(count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
         {
             continue;
         }
@@ -250,7 +213,6 @@ bool send_all(
 /*
  * 请求：4 字节网络字节序长度 + UTF-8 JSON。
  * 响应：单字节 0x06，代表该消息已被服务端确认。
- *
  * 每个连接同一时间只有一条待确认消息，
  * 因此 ACK 与当前请求一一对应。
  * 超时后关闭连接，不能继续复用旧连接的 ACK。
@@ -262,11 +224,9 @@ bool send_and_confirm(int fd, const std::string &json)
         return false;
     }
 
-    const uint32_t length =
-        htonl(static_cast<uint32_t>(json.size()));
+    const uint32_t length = htonl(static_cast<uint32_t>(json.size()));
 
-    const long long deadline =
-        monotonic_us() + IO_TIMEOUT_MS * 1000LL;
+    const long long deadline = monotonic_us() + IO_TIMEOUT_MS * 1000LL;
 
     if(!send_all(fd, &length, sizeof(length), deadline) ||
        !send_all(fd, json.data(), json.size(), deadline))
@@ -289,10 +249,7 @@ bool send_and_confirm(int fd, const std::string &json)
             return ack == 0x06;
         }
 
-        if(count < 0 &&
-           (errno == EINTR ||
-            errno == EAGAIN ||
-            errno == EWOULDBLOCK))
+        if(count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
         {
             continue;
         }
@@ -318,24 +275,19 @@ void *network_thread(void *)
             {
                 if(!stopping.load())
                 {
-                    LOG_INFO("TCP connect failed; retry in %d ms",
-                             RETRY_INTERVAL_MS);
+                    LOG_INFO("TCP connect failed; retry in %d ms", RETRY_INTERVAL_MS);
                 }
 
                 interruptible_delay(RETRY_INTERVAL_MS);
                 continue;
             }
 
-            LOG_INFO("TCP connected %s:%d",
-                     server_ip.c_str(), server_port);
+            LOG_INFO("TCP connected %s:%d", server_ip.c_str(), server_port);
 
             next_heartbeat = 0;
         }
 
-        /*
-         * 每五秒发一次心跳，包括持续有检测消息时。
-         * 心跳也需要 ACK，确认服务端能响应。
-         */
+        /* 每五秒发一次心跳，包括持续有检测消息时。 心跳也需要 ACK，确认服务端能响应。 */
         if(monotonic_us() >= next_heartbeat)
         {
             unsigned long long sequence;
@@ -346,9 +298,7 @@ void *network_thread(void *)
 
             std::string json;
 
-            const bool built = protocol_build_message(
-                device_id, make_id(sequence), NULL, json
-            );
+            const bool built = protocol_build_message(device_id, make_id(sequence), NULL, json);
 
             if(!built || !send_and_confirm(fd, json))
             {
@@ -358,8 +308,7 @@ void *network_thread(void *)
                 continue;
             }
 
-            next_heartbeat =
-                monotonic_us() + HEARTBEAT_INTERVAL_MS * 1000LL;
+            next_heartbeat = monotonic_us() + HEARTBEAT_INTERVAL_MS * 1000LL;
 
             LOG_INFO("TCP heartbeat acknowledged");
         }
@@ -367,10 +316,7 @@ void *network_thread(void *)
         PendingResult item = {};
         bool have_result = false;
 
-        /*
-         * 这里只复制队首，不弹出。
-         * 服务端 ACK 后才弹出，失败则重连后重发相同 ID。
-         */
+        /* 这里只复制队首，不弹出。 服务端 ACK 后才弹出，失败则重连后重发相同 ID。 */
         pthread_mutex_lock(&queue_mutex);
 
         if(!queue.empty())
@@ -389,11 +335,7 @@ void *network_thread(void *)
 
         std::string json;
 
-        if(!protocol_build_message(
-                device_id,
-                make_id(item.sequence),
-                &item.result,
-                json))
+        if(!protocol_build_message(device_id, make_id(item.sequence), &item.result, json))
         {
             LOG_ERR("TCP invalid detection result; discarded");
 
@@ -419,12 +361,8 @@ void *network_thread(void *)
         queue.pop_front();
         pthread_mutex_unlock(&queue_mutex);
 
-        LOG_INFO(
-            "TCP acknowledged seq=%llu boxes=%d round_trip=%.2f ms",
-            item.sequence,
-            item.result.count,
-            (monotonic_us() - sent_at) / 1000.0
-        );
+        LOG_INFO("TCP acknowledged seq=%llu boxes=%d round_trip=%.2f ms", item.sequence,
+                 item.result.count, (monotonic_us() - sent_at) / 1000.0);
     }
 
     if(fd >= 0)
@@ -436,32 +374,23 @@ void *network_thread(void *)
 
     return NULL;
 }
-
 } // namespace
 
-int tcp_client_start(
-        const char *ip,
-        int port,
-        const char *id)
+int tcp_client_start(const char *ip, int port, const char *id)
 {
-    if(started || ip == NULL || id == NULL ||
-       port < 1 || port > 65535)
+    if(started || ip == NULL || id == NULL || port < 1 || port > 65535)
     {
         return -1;
     }
 
     struct in_addr address;
 
-    if(inet_pton(AF_INET, ip, &address) != 1 ||
-       !valid_identifier(id))
+    if(inet_pton(AF_INET, ip, &address) != 1 || !valid_identifier(id))
     {
         return -1;
     }
 
-    /*
-     * 每次启动生成独立会话 ID，避免程序重启后的消息 ID 冲突。
-     * RK3588 Linux 上从内核 UUID 接口读取。
-     */
+    /* 每次启动生成独立会话 ID，避免程序重启后的消息 ID 冲突。 RK3588 Linux 上从内核 UUID 接口读取。 */
     std::ifstream uuid_file("/proc/sys/kernel/random/uuid");
     std::string uuid;
 
@@ -480,9 +409,7 @@ int tcp_client_start(
     stopping.store(false);
     queue.clear();
 
-    const int ret = pthread_create(
-        &worker, NULL, network_thread, NULL
-    );
+    const int ret = pthread_create(&worker, NULL, network_thread, NULL);
 
     if(ret != 0)
     {
@@ -497,9 +424,7 @@ int tcp_client_start(
 
 int tcp_client_submit(const DetectionResult *result)
 {
-    if(!started || result == NULL ||
-       result->count < 0 ||
-       result->count > MAX_DETECTION_NUM)
+    if(!started || result == NULL || result->count < 0 || result->count > MAX_DETECTION_NUM)
     {
         return -1;
     }

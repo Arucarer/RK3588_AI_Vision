@@ -10,16 +10,14 @@
 
 static std::string trim(const std::string &text)
 {
-    const size_t first =
-        text.find_first_not_of(" \t\r\n");
+    const size_t first = text.find_first_not_of(" \t\r\n");
 
     if(first == std::string::npos)
     {
         return "";
     }
 
-    const size_t last =
-        text.find_last_not_of(" \t\r\n");
+    const size_t last = text.find_last_not_of(" \t\r\n");
 
     return text.substr(first, last - first + 1);
 }
@@ -62,14 +60,10 @@ static bool parse_boolean(const std::string &text)
         return false;
     }
 
-    throw std::runtime_error(
-        "boolean must be true or false: " + text
-    );
+    throw std::runtime_error("boolean must be true or false: " + text);
 }
 
-bool validate_config(
-        const AppConfig &config,
-        std::string &error)
+bool validate_config(const AppConfig &config, std::string &error)
 {
     error.clear();
 
@@ -79,62 +73,50 @@ bool validate_config(
         return false;
     }
 
-    if(!std::isfinite(config.confidence) ||
-       config.confidence <= 0.0f ||
-       config.confidence > 1.0f)
+    if(!std::isfinite(config.confidence) || config.confidence <= 0.0f || config.confidence > 1.0f)
     {
         error = "confidence must be in (0, 1]";
         return false;
     }
 
-    if(!std::isfinite(config.nms) ||
-       config.nms <= 0.0f ||
-       config.nms > 1.0f)
+    if(!std::isfinite(config.nms) || config.nms <= 0.0f || config.nms > 1.0f)
     {
         error = "nms must be in (0, 1]";
         return false;
     }
 
-    if(config.snapshot_dir.empty() ||
-       config.snapshot_dir[0] != '/')
+    if(config.snapshot_dir.empty() || config.snapshot_dir[0] != '/')
     {
         error = "snapshot_dir must be an absolute path";
         return false;
     }
 
-    if(config.snapshot_interval_ms < 100 ||
-       config.snapshot_interval_ms > 86400000)
+    if(config.snapshot_interval_ms < 100 || config.snapshot_interval_ms > 86400000)
     {
         error = "snapshot_interval_ms must be 100..86400000";
         return false;
     }
 
-    if(config.stats_interval_ms < 100 ||
-       config.stats_interval_ms > 60000)
+    if(config.stats_interval_ms < 100 || config.stats_interval_ms > 60000)
     {
         error = "stats_interval_ms must be 100..60000";
         return false;
     }
 
-    if(config.camera_timeout_ms < 500 ||
-       config.camera_timeout_ms > 60000)
+    if(config.camera_timeout_ms < 500 || config.camera_timeout_ms > 60000)
     {
         error = "camera_timeout_ms must be 500..60000";
         return false;
     }
 
-    if(config.max_errors < 1 ||
-       config.max_errors > 1000)
+    if(config.max_errors < 1 || config.max_errors > 1000)
     {
         error = "max_errors must be 1..1000";
         return false;
     }
     struct in_addr address;
 
-    if(inet_pton(
-            AF_INET,
-            config.server_ip.c_str(),
-            &address) != 1)
+    if(inet_pton(AF_INET, config.server_ip.c_str(), &address) != 1)
     {
         error = "server_ip must be an IPv4 address";
         return false;
@@ -146,19 +128,16 @@ bool validate_config(
         return false;
     }
 
-    if(config.device_id.empty() ||
-       config.device_id.size() > 64 ||
-       config.device_id.find_first_not_of(
-           "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-           "abcdefghijklmnopqrstuvwxyz"
-           "0123456789_-") != std::string::npos)
+    if(config.device_id.empty() || config.device_id.size() > 64 ||
+       config.device_id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                          "abcdefghijklmnopqrstuvwxyz"
+                                          "0123456789_-") != std::string::npos)
     {
         error = "invalid device_id";
         return false;
     }
 
-    if(config.report_interval_ms < 100 ||
-       config.report_interval_ms > 60000)
+    if(config.report_interval_ms < 100 || config.report_interval_ms > 60000)
     {
         error = "report_interval_ms must be 100..60000";
         return false;
@@ -166,10 +145,7 @@ bool validate_config(
     return true;
 }
 
-bool load_config(
-        const char *path,
-        AppConfig &config,
-        std::string &error)
+bool load_config(const char *path, AppConfig &config, std::string &error)
 {
     error.clear();
 
@@ -214,11 +190,9 @@ bool load_config(
                 throw std::runtime_error("expected key=value");
             }
 
-            const std::string key =
-                trim(line.substr(0, separator));
+            const std::string key = trim(line.substr(0, separator));
 
-            const std::string value =
-                trim(line.substr(separator + 1));
+            const std::string value = trim(line.substr(separator + 1));
 
             if(key.empty() || value.empty())
             {
@@ -298,10 +272,7 @@ bool load_config(
     }
     catch(const std::exception &exception)
     {
-        error =
-            std::string(path) + ":" +
-            std::to_string(line_number) + ": " +
-            exception.what();
+        error = std::string(path) + ":" + std::to_string(line_number) + ": " + exception.what();
 
         return false;
     }

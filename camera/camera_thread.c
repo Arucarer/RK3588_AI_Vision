@@ -56,10 +56,7 @@ void *camera_thread(void *arg)
         }
     }
 
-    /*
-     * 通知主线程采集已停止。
-     * 这里是普通线程上下文，可以使用互斥锁、条件变量。
-     */
+    /* 通知主线程采集已停止。 这里是普通线程上下文，可以使用互斥锁、条件变量。 */
     camera_buffer_stop();
 
     LOG_INFO("camera thread stopped");

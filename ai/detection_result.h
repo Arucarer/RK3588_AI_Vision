@@ -4,9 +4,7 @@
 #define DETECT_CLASS_NUM 6
 #define MAX_DETECTION_NUM 100
 
-/*
- * 类别顺序与 defect.yaml 一致。
- */
+/* 类别顺序与 defect.yaml 一致。 */
 typedef enum
 {
     DEFECT_CRAZING = 0,
@@ -19,7 +17,6 @@ typedef enum
 
 /*
  * 单个缺陷框。
- *
  * 坐标位于摄像头原图坐标系。
  * 使用浮点数保存，绘制时再转换为整数。
  */
@@ -36,7 +33,6 @@ typedef struct
 
 /*
  * 一帧的检测结果。
- *
  * count == 0：没有通过筛选的检测框。
  * 推理失败应由函数返回值表示，不用 count 表示。
  */

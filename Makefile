@@ -32,12 +32,9 @@
 #
 # ============================================================
 
-
 # ==================== 程序名称 ====================
 
 TARGET := rk3588_ai_detect
-
-
 
 # ==================== 工程目录 ====================
 
@@ -58,51 +55,38 @@ NETWORK_DIR := network
 
 RK3588_SDK := /home/aaa/rk3588_linux_sdk
 
-
-
 # ==================== 工具链 ====================
 
 TOOLCHAIN_DIR := \
 $(RK3588_SDK)/buildroot/output/rockchip_atk_dlrk3588/host/bin
 
-
 CROSS_COMPILE := \
 $(TOOLCHAIN_DIR)/aarch64-buildroot-linux-gnu-
-
 
 CC  := $(CROSS_COMPILE)gcc
 
 CXX := $(CROSS_COMPILE)g++
 
-
 AR := $(CROSS_COMPILE)ar
 
 STRIP := $(CROSS_COMPILE)strip
 
-
-
 # ==================== SYSROOT ====================
 
 SYSROOT := $(shell $(CXX) --print-sysroot)
-
-
 
 # ==================== RKNN ====================
 
 RKNN_INCLUDE := \
 $(SYSROOT)/usr/include/rknn
 
-
 RKNN_LIB := \
 $(SYSROOT)/usr/lib
-
-
 
 # ==================== RGA ====================
 
 RGA_INCLUDE := \
 $(SYSROOT)/usr/include/rga
-
 
 RGA_LIB := \
 $(SYSROOT)/usr/lib
@@ -112,10 +96,8 @@ $(SYSROOT)/usr/lib
 DRM_INCLUDE := \
 $(SYSROOT)/usr/include/libdrm
 
-
 DRM_LIB := \
 $(SYSROOT)/usr/lib
-
 
 # ==================== 头文件路径 ====================
 
@@ -131,8 +113,6 @@ INCLUDES := \
 -I$(NETWORK_DIR) \
 -I$(DRM_INCLUDE)
 
-
-
 # ==================== C参数 ====================
 
 CFLAGS := \
@@ -141,8 +121,6 @@ CFLAGS := \
 -O2 \
 -g \
 $(INCLUDES)
-
-
 
 # ==================== C++参数 ====================
 
@@ -154,17 +132,11 @@ CXXFLAGS := \
 -std=c++11 \
 $(INCLUDES)
 
-
-
-
 # ==================== 链接路径 ====================
 
 LDFLAGS := \
 -L$(RKNN_LIB) \
 -L$(RGA_LIB)
-
-
-
 
 # ==================== 链接库 ====================
 
@@ -176,8 +148,6 @@ LDLIBS := \
 -ldl \
 -lm
 
-
-
 # ============================================================
 # C源码
 # ============================================================
@@ -186,10 +156,6 @@ C_SRCS := \
 $(CAMERA_DIR)/v4l2_capture.c \
 $(CAMERA_DIR)/camera_buffer.c \
 $(CAMERA_DIR)/camera_thread.c
-
-
-
-
 
 # ============================================================
 # C++源码
@@ -224,41 +190,27 @@ $(NETWORK_DIR)/tcp_client.cpp \
 $(NETWORK_DIR)/json_protocol.cpp \
 $(DISPLAY_DIR)/rga_display.cpp
 
-
-
-
-
 # ==================== 目标文件 ====================
 
 C_OBJS := \
 $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS))
 
-
 CPP_OBJS := \
 $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(CPP_SRCS))
-
 
 OBJS := \
 $(C_OBJS) \
 $(CPP_OBJS)
 
-
-
 # ==================== 依赖 ====================
 
 DEPS := $(OBJS:.o=.d)
-
-
-
 
 # ==================== 默认 ====================
 
 .PHONY: all
 
-
 all: $(BIN_DIR)/$(TARGET)
-
-
 
 # ==================== 链接 ====================
 
@@ -279,10 +231,6 @@ $(BIN_DIR)/$(TARGET):$(OBJS)
 	@echo "========================================"
 	@echo ""
 
-
-
-
-
 # ==================== C编译 ====================
 
 $(BUILD_DIR)/%.o:%.c
@@ -295,10 +243,6 @@ $(BUILD_DIR)/%.o:%.c
 	-MP \
 	-c $< \
 	-o $@
-
-
-
-
 
 # ==================== C++编译 ====================
 
@@ -313,22 +257,13 @@ $(BUILD_DIR)/%.o:%.cpp
 	-c $< \
 	-o $@
 
-
-
-
-
 # ==================== 自动依赖 ====================
 
 -include $(DEPS)
 
-
-
-
-
 # ==================== 清理 ====================
 
 .PHONY:clean
-
 
 clean:
 
@@ -338,37 +273,22 @@ clean:
 
 	@echo "clean success"
 
-
-
-
-
-
 # ==================== 重编译 ====================
 
 .PHONY: rebuild
 
-
 rebuild: clean all
-
-
-
 
 # ==================== 查看架构 ====================
 
 .PHONY:check
 
-
 check:
 	file $(BIN_DIR)/$(TARGET)
-
-
-
-
 
 # ==================== strip ====================
 
 .PHONY:strip
-
 
 strip:
 
@@ -376,15 +296,9 @@ strip:
 
 	@echo "strip success"
 
-
-
-
-
-
 # ==================== 查看配置 ====================
 
 .PHONY:info
-
 
 info:
 
@@ -407,13 +321,9 @@ info:
 	@echo "DRM_LIB=$(DRM_LIB)"
 	@echo ""
 
-
-
-
 # ==================== 查看源文件 ====================
 
 .PHONY:sources
-
 
 sources:
 
@@ -425,14 +335,9 @@ sources:
 	@echo "C++ Sources:"
 	@printf "%s\n" $(CPP_SRCS)
 
-
-
-
-
 # ==================== 工具检查 ====================
 
 .PHONY:check-toolchain
-
 
 check-toolchain:
 
@@ -442,12 +347,7 @@ check-toolchain:
 
 	$(CXX) --version
 
-
-
-
-
 .PHONY:check-rknn
-
 
 check-rknn:
 
@@ -455,12 +355,7 @@ check-rknn:
 
 	ls -l $(RKNN_LIB)/librknnrt.so*
 
-
-
-
-
 .PHONY:check-rga
-
 
 check-rga:
 

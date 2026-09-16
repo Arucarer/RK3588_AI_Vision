@@ -1,21 +1,5 @@
-/*
- * @file    rknn_model.cpp
- * @brief   实现RK3588 AI视觉检测项目中的RKNN模型加载与释放
- * @author  zhangyong
- * @date    2026-09-13
- * @version 1.0
- *
- * @note
- * 该文件主要实现：
- * 1. 打开RKNN模型文件
- * 2. 获取模型文件大小
- * 3. 申请模型内存
- * 4. 将完整模型读取到内存
- * 5. 释放模型资源
- *
- * 本模块只负责模型文件管理，
- * RKNN Runtime相关操作由rknn_engine模块完成。
- */
+/* 实现RK3588 AI视觉检测项目中的RKNN模型加载与释放 */
+/* @author  zhangyong | @date    2026-09-13 | @version 1.0 */
 
 #include "rknn_model.h"
 #include "common.h"
@@ -24,16 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-
-int rknn_model_load(const char *model_path,
-                    RknnModel *model)
+int rknn_model_load(const char *model_path, RknnModel *model)
 {
     FILE *fp = NULL;
 
     long file_size;
 
     size_t read_size;
-
 
     if(model_path == NULL || model == NULL)
     {
@@ -42,20 +23,16 @@ int rknn_model_load(const char *model_path,
         return -1;
     }
 
-
     memset(model, 0, sizeof(RknnModel));
-
 
     fp = fopen(model_path, "rb");
 
     if(fp == NULL)
     {
-        LOG_ERR("open rknn model failed: %s",
-                model_path);
+        LOG_ERR("open rknn model failed: %s", model_path);
 
         return -1;
     }
-
 
     if(fseek(fp, 0, SEEK_END) != 0)
     {
@@ -64,17 +41,14 @@ int rknn_model_load(const char *model_path,
         goto ERROR;
     }
 
-
     file_size = ftell(fp);
 
     if(file_size <= 0)
     {
-        LOG_ERR("invalid rknn model size: %ld",
-                file_size);
+        LOG_ERR("invalid rknn model size: %ld", file_size);
 
         goto ERROR;
     }
-
 
     if(fseek(fp, 0, SEEK_SET) != 0)
     {
@@ -82,7 +56,6 @@ int rknn_model_load(const char *model_path,
 
         goto ERROR;
     }
-
 
     model->data = malloc((size_t)file_size);
 
@@ -93,42 +66,26 @@ int rknn_model_load(const char *model_path,
         goto ERROR;
     }
 
-
-    read_size = fread(model->data,
-                      1,
-                      (size_t)file_size,
-                      fp);
+    read_size = fread(model->data, 1, (size_t)file_size, fp);
 
     if(read_size != (size_t)file_size)
     {
-        LOG_ERR("read rknn model failed expect=%ld actual=%zu",
-                file_size,
-                read_size);
+        LOG_ERR("read rknn model failed expect=%ld actual=%zu", file_size, read_size);
 
         goto ERROR;
     }
 
-
     model->size = (size_t)file_size;
 
-
-    strncpy(model->path,
-            model_path,
-            sizeof(model->path) - 1);
+    strncpy(model->path, model_path, sizeof(model->path) - 1);
 
     model->path[sizeof(model->path) - 1] = '\0';
 
-
     fclose(fp);
 
-
-    LOG_INFO("rknn model load success: %s size=%zu",
-             model->path,
-             model->size);
-
+    LOG_INFO("rknn model load success: %s size=%zu", model->path, model->size);
 
     return 0;
-
 
 ERROR:
 
@@ -137,7 +94,6 @@ ERROR:
         fclose(fp);
     }
 
-
     if(model->data != NULL)
     {
         free(model->data);
@@ -145,15 +101,12 @@ ERROR:
         model->data = NULL;
     }
 
-
     model->size = 0;
 
     model->path[0] = '\0';
 
-
     return -1;
 }
-
 
 void rknn_model_unload(RknnModel *model)
 {
@@ -162,7 +115,6 @@ void rknn_model_unload(RknnModel *model)
         return;
     }
 
-
     if(model->data != NULL)
     {
         free(model->data);
@@ -170,11 +122,9 @@ void rknn_model_unload(RknnModel *model)
         model->data = NULL;
     }
 
-
     model->size = 0;
 
     model->path[0] = '\0';
-
 
     LOG_INFO("rknn model unloaded");
 }
