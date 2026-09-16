@@ -27,6 +27,7 @@
 #include <sys/time.h>
 #include <stdint.h>
 #include <signal.h>
+#include <time.h>
 
 
 // ==================== 视频参数 ====================
@@ -95,6 +96,16 @@ static inline long long get_time_us()
            tv.tv_usec;
 }
 
+
+static inline long long monotonic_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+extern int g_debug_logs;
+#define LOG_DEBUG(...) do { if(g_debug_logs) LOG_INFO(__VA_ARGS__); } while(0)
 
 // ==================== 日志 ====================
 

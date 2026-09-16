@@ -4,6 +4,9 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <poll.h>
+#include <errno.h>
+#include <limits.h>
 
 #define BUF_COUNT 4
 
@@ -32,7 +35,10 @@ int v4l2_init()
 
     // #1.打开摄像头
 
-    g_v4l2_fd = open(V4L2_DEV, O_RDWR);
+    g_v4l2_fd = open(
+        V4L2_DEV,
+        O_RDWR | O_NONBLOCK | O_CLOEXEC
+    );
     if(g_v4l2_fd < 0){
         LOG_ERR("open camera failed");
         return -1;
@@ -77,7 +83,22 @@ int v4l2_init()
              fmt.fmt.pix_mp.height,
              fmt.fmt.pix_mp.num_planes);
 
-
+    /*
+    * 当前预处理只支持固定尺寸、紧密排列的单平面 NV12。
+    * 不接受驱动静默调整为其他格式。
+    */
+    if(fmt.fmt.pix_mp.width != VIDEO_WIDTH ||
+    fmt.fmt.pix_mp.height != VIDEO_HEIGHT ||
+    fmt.fmt.pix_mp.pixelformat != V4L2_PIX_FMT_NV12 ||
+    fmt.fmt.pix_mp.num_planes != 1 ||
+    fmt.fmt.pix_mp.plane_fmt[0].bytesperline != VIDEO_WIDTH)
+    {
+        LOG_ERR(
+            "unsupported camera format or stride: stride=%u",
+            fmt.fmt.pix_mp.plane_fmt[0].bytesperline
+        );
+        goto ERROR;
+    }
 
     // #3.申请buffer
 
@@ -202,43 +223,109 @@ int v4l2_init()
         return -1;
 }
 
-// ==================== 获取一帧 ====================
+/*
+ * 返回：
+ *  0：获得一帧
+ *  1：暂时无帧或等待被信号打断
+ * -1：采集错误
+ */
 int v4l2_capture_frame(FrameData *frame)
 {
+    if(frame == NULL || g_v4l2_fd < 0)
+    {
+        return -1;
+    }
+
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+
+    pfd.fd = g_v4l2_fd;
+    pfd.events = POLLIN;
+
+    const int ready = poll(&pfd, 1, 200);
+
+    if(ready == 0)
+    {
+        return 1;
+    }
+
+    if(ready < 0)
+    {
+        if(errno == EINTR)
+        {
+            return 1;
+        }
+
+        LOG_ERR("camera poll failed: %s", strerror(errno));
+        return -1;
+    }
+
+    if(pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+    {
+        LOG_ERR("camera poll error events=0x%x", pfd.revents);
+        return -1;
+    }
+
+    if(!(pfd.revents & POLLIN))
+    {
+        return 1;
+    }
+
     struct v4l2_buffer buf;
     struct v4l2_plane planes[VIDEO_MAX_PLANES];
 
-    memset(&buf,0,sizeof(buf));
-    memset(planes,0,sizeof(planes));
-
+    memset(&buf, 0, sizeof(buf));
+    memset(planes, 0, sizeof(planes));
 
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     buf.memory = V4L2_MEMORY_MMAP;
     buf.length = VIDEO_MAX_PLANES;
     buf.m.planes = planes;
 
+    if(ioctl(g_v4l2_fd, VIDIOC_DQBUF, &buf) < 0)
+    {
+        if(errno == EAGAIN || errno == EINTR)
+        {
+            return 1;
+        }
 
-    //如果获取失败，则返回-1
-    if(ioctl( g_v4l2_fd, VIDIOC_DQBUF, &buf) < 0){
+        LOG_ERR("camera dequeue failed: %s", strerror(errno));
         return -1;
     }
 
-    if(buf.index >= g_buf_count){
-        LOG_ERR("invalid buffer index:%u", buf.index);
+    if(buf.index >= g_buf_count)
+    {
+        LOG_ERR("invalid camera buffer index=%u", buf.index);
         return -1;
     }
 
-    frame->vir_addr = g_bufs[buf.index].start;     // V4L2 MMAP虚拟地址
-    frame->dma_fd = g_bufs[buf.index].dma_fd;      // DMA-BUF fd，后续给RGA使用
+    if((buf.flags & V4L2_BUF_FLAG_ERROR) ||
+       planes[0].data_offset != 0 ||
+       planes[0].bytesused != VIDEO_FRAME_SIZE ||
+       planes[0].bytesused > g_bufs[buf.index].length ||
+       planes[0].bytesused > INT_MAX)
+    {
+        LOG_ERR(
+            "invalid camera frame: bytes=%u offset=%u flags=0x%x",
+            planes[0].bytesused,
+            planes[0].data_offset,
+            buf.flags
+        );
 
-    frame->index = buf.index;                      // V4L2 Buffer索引
+        /* 已经出队的缓冲区必须归还 */
+        v4l2_release_frame((int)buf.index);
+        return -1;
+    }
 
-    frame->width = VIDEO_WIDTH;                    // 原始图像宽度
-    frame->height = VIDEO_HEIGHT;                  // 原始图像高度
+    memset(frame, 0, sizeof(*frame));
 
-    frame->len = planes[0].bytesused;              // 当前帧有效数据长度
-    frame->pts = get_time_us();               // 当前帧时间戳
-
+    frame->vir_addr = g_bufs[buf.index].start;
+    frame->dma_fd = g_bufs[buf.index].dma_fd;
+    frame->index = (int)buf.index;
+    frame->width = VIDEO_WIDTH;
+    frame->height = VIDEO_HEIGHT;
+    frame->len = (int)planes[0].bytesused;
+    frame->pts = get_time_us();
 
     return 0;
 }

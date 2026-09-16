@@ -37,6 +37,9 @@ int camera_buffer_release(FrameData *frame);
 
 void camera_buffer_deinit(void);
 
+/* 唤醒等待者并停止接收新帧；不能在信号处理函数中调用 */
+void camera_buffer_stop(void);
+
 
 #ifdef __cplusplus
 }

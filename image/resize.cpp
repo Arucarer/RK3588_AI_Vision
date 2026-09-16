@@ -133,7 +133,7 @@ int image_resize_nv12_to_rgb(
     }
 
 
-    LOG_INFO(
+    LOG_DEBUG(
         "RGA success %dx%d NV12 -> %dx%d RGB",
         src->width,
         src->height,

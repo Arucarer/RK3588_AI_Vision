@@ -34,7 +34,7 @@
 
 #include "common.h"
 
-
+#include <time.h>
 
 #include "v4l2_capture.h"
 #include "camera_buffer.h"
@@ -57,14 +57,16 @@
 
 volatile sig_atomic_t g_run_state = RUN_STATE_OK;
 
-
+/* 0：关闭逐帧调试日志；后续接入配置 */
+int g_debug_logs = 0;
 
 static void signal_handler(int sig)
 {
     (void)sig;
 
-    g_run_state =
-        RUN_STATE_EXIT;
+    g_run_state = RUN_STATE_EXIT;
+    
+    
 }
 
 /* 单图检测函数前置声明 */
@@ -91,6 +93,10 @@ int main(int argc,char *argv[])
         return run_image_mode(argv[2], argv[3]);
     }
     int ret = -1;
+    /* 初始化失败默认返回错误，完成启动后改为成功 */
+    int exit_code = 1;
+    long long last_frame_us = 0;
+
     const char *model_path = "/opt/rk3588_ai/model/best.rknn";
 
     RKNNEngine engine;
@@ -112,6 +118,8 @@ int main(int argc,char *argv[])
 
     RKNNInferenceResult inference_result = {};
 
+    /* 使用单调时钟计算间隔，不受系统时间调整影响 */
+    long long last_snapshot_attempt_ms = -1;
 
     long frame_count = 0;
     long long last_time = get_time_us();
@@ -283,13 +291,44 @@ int main(int argc,char *argv[])
         "camera thread start"
     );
 
-
+    exit_code = 0;
+    last_frame_us = monotonic_us();
+    
     while(g_run_state == RUN_STATE_OK)
     {
-        if(camera_buffer_pop(&frame) != 0)
+        const int pop_ret = camera_buffer_pop(&frame);
+
+        /* 信号处理函数只设置退出标志 */
+        if(g_run_state != RUN_STATE_OK)
         {
+            if(pop_ret == 0)
+            {
+                camera_buffer_release(&frame);
+            }
+
+            break;
+        }
+
+        if(pop_ret < 0)
+        {
+            LOG_ERR("camera buffer stopped unexpectedly");
+            exit_code = 1;
+            break;
+        }
+
+        if(pop_ret == 1)
+        {
+            if(monotonic_us() - last_frame_us >= 5000000LL)
+            {
+                LOG_ERR("camera timeout: no frame for 5 seconds");
+                exit_code = 1;
+                break;
+            }
+
             continue;
         }
+
+        last_frame_us = monotonic_us();
 
         const long long preprocess_start = get_time_us();
 
@@ -310,6 +349,7 @@ int main(int argc,char *argv[])
         engine.input_channel != 3)
         {
             LOG_ERR("model input shape does not match preprocessing");
+            exit_code = 1;
 
             preprocess_release(&processed_image);
             camera_buffer_release(&frame);
@@ -389,7 +429,60 @@ int main(int argc,char *argv[])
         {
             LOG_ERR("display frame failed");
         }
+        /*
+        * 只保存本帧推理、后处理和显示均成功的检测结果。
+        * 显示缓冲区此时已包含本帧检测框和文字。
+        */
+        if(inference_ret == 0 &&
+        post_ret == 0 &&
+        display_ret == 0 &&
+        detect_result.count > 0)
+        {
+            struct timespec snapshot_now;
 
+            if(clock_gettime(CLOCK_MONOTONIC, &snapshot_now) == 0)
+            {
+                const long long now_ms =
+                    (long long)snapshot_now.tv_sec * 1000 +
+                    snapshot_now.tv_nsec / 1000000;
+
+                if(last_snapshot_attempt_ms < 0 ||
+                now_ms - last_snapshot_attempt_ms >= 5000)
+                {
+                    /*
+                    * 失败也限频，避免磁盘异常时每帧重复写入。
+                    */
+                    last_snapshot_attempt_ms = now_ms;
+
+                    const long long save_start = get_time_us();
+
+                    const int saved = display_save_snapshot(
+                        "/opt/rk3588_ai/captures",
+                        detect_result.pts
+                    );
+
+                    const double save_time =
+                        (get_time_us() - save_start) / 1000.0;
+
+                    if(saved < 0)
+                    {
+                        LOG_ERR("snapshot enqueue failed");
+                    }
+                    else if(saved == 0)
+                    {
+                        LOG_INFO("snapshot queue full, skipped");
+                    }
+                    else
+                    {
+                        LOG_INFO(
+                            "snapshot queued boxes=%d enqueue=%.2f ms",
+                            detect_result.count,
+                            save_time
+                        );
+                    }
+                }
+            }
+        }
         /* 统计成功完成推理和后处理的帧 */
         if(inference_ret == 0 && post_ret == 0)
         {
@@ -475,7 +568,22 @@ EXIT:
     g_run_state =
         RUN_STATE_EXIT;
 
+    /* 停止缓存，唤醒等待中的线程 */
+    if(camera_buffer_initialized)
+    {
+        camera_buffer_stop();
+    }
 
+    /*
+     * 等待Camera线程退出
+     */
+    if(camera_thread_created)
+    {
+        pthread_join(
+            camera_tid,
+            NULL
+        );
+    }
 
 
 
@@ -579,7 +687,7 @@ EXIT:
     );
 
 
-    return 0;
+    return exit_code;
 }
 
 static int run_image_mode(
