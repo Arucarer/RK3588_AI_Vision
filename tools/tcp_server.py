@@ -9,7 +9,7 @@ import struct
 import time
 import base64
 import hashlib
-
+import math
 MAX_MESSAGE_SIZE = 12 * 1024 * 1024
 MAX_JPEG_SIZE = 8 * 1024 * 1024
 
@@ -26,7 +26,46 @@ def recv_exact(sock, size):
         data.extend(block)
 
     return bytes(data)
+def validate_heartbeat(message):
+    # 兼容旧版心跳：可以没有 timestamp_us 和 device_status。
+    if "timestamp_us" in message:
+        timestamp = message["timestamp_us"]
 
+        if type(timestamp) is not int or not 0 <= timestamp <= 9223372036854775807:
+            raise ValueError("invalid heartbeat timestamp_us")
+
+    if "device_status" not in message:
+        return
+
+    status = message["device_status"]
+
+    if not isinstance(status, dict):
+        raise ValueError("device_status must be an object")
+
+    # 带状态的新心跳必须携带采样时间。
+    if "timestamp_us" not in message:
+        raise ValueError("device_status requires timestamp_us")
+
+    key = "max_thermal_zone_temperature_c"
+
+    if key not in status:
+        raise ValueError("missing temperature field")
+
+    temperature = status[key]
+
+    # null 表示板端没有读到有效温度。
+    if temperature is None:
+        return
+
+    # 不接受 bool、字符串、非有限值或超出范围的数值。
+    if type(temperature) not in (int, float):
+        raise ValueError("temperature must be a number or null")
+
+    if not -100 <= temperature <= 250:
+        raise ValueError("temperature outside valid range")
+
+    if not math.isfinite(temperature):
+        raise ValueError("temperature must be finite")
 
 def validate_message(message):
     if not isinstance(message, dict):
@@ -53,6 +92,10 @@ def validate_message(message):
             )
         ):
             raise ValueError("invalid " + key)
+
+    if message["type"] == "heartbeat":
+        validate_heartbeat(message)
+        return
 
     if message["type"] == "detection":
         boxes = message.get("boxes")
@@ -186,6 +229,254 @@ def store_event(database, message):
         flush=True,
     )
 
+def update_temperature_alarm(
+    database, message, temperature, received_ns, high, clear
+):
+    if temperature is None:
+        return None
+
+    device_id = message["device_id"]
+
+    row = database.execute(
+        """
+        SELECT active
+        FROM temperature_alarm_state
+        WHERE device_id=?
+        """,
+        (device_id,),
+    ).fetchone()
+
+    was_active = bool(row[0]) if row is not None else False
+    active = was_active
+
+    if not was_active and temperature >= high:
+        active = True
+    elif was_active and temperature <= clear:
+        active = False
+
+    database.execute(
+        """
+        INSERT INTO temperature_alarm_state
+            (device_id, active, temperature_c, updated_ns)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+            active=excluded.active,
+            temperature_c=excluded.temperature_c,
+            updated_ns=excluded.updated_ns
+        """,
+        (device_id, int(active), temperature, received_ns),
+    )
+
+    if active == was_active:
+        return None
+
+    transition = "raised" if active else "cleared"
+
+    database.execute(
+        """
+        INSERT INTO temperature_alarm_events
+        (
+            device_id,
+            message_id,
+            received_ns,
+            timestamp_us,
+            transition,
+            temperature_c,
+            high_threshold_c,
+            clear_threshold_c
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            device_id,
+            message["message_id"],
+            received_ns,
+            message.get("timestamp_us"),
+            transition,
+            temperature,
+            high,
+            clear,
+        ),
+    )
+
+    return transition
+def store_heartbeat(database, message, high, clear):
+    status = message.get("device_status", {})
+    temperature = status.get("max_thermal_zone_temperature_c")
+
+    payload = json.dumps(
+        message,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    device_id = message["device_id"]
+    message_id = message["message_id"]
+    received_ns = time.time_ns()
+    transition = None
+
+    # 心跳、告警状态及告警记录在同一事务中提交。
+    with database:
+        cursor = database.execute(
+            """
+            INSERT OR IGNORE INTO heartbeats
+            (
+                device_id,
+                message_id,
+                received_ns,
+                timestamp_us,
+                max_thermal_zone_temperature_c,
+                payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                message_id,
+                received_ns,
+                message.get("timestamp_us"),
+                temperature,
+                payload,
+            ),
+        )
+
+        inserted = cursor.rowcount == 1
+
+        row = database.execute(
+            """
+            SELECT payload
+            FROM heartbeats
+            WHERE device_id=? AND message_id=?
+            """,
+            (device_id, message_id),
+        ).fetchone()
+
+        if row is None or row[0] != payload:
+            raise ValueError(
+                "heartbeat ID already exists with different content"
+            )
+
+        # 重发的心跳只确认，不重新改变告警状态。
+        if inserted:
+            transition = update_temperature_alarm(
+                database,
+                message,
+                temperature,
+                received_ns,
+                high,
+                clear,
+            )
+
+    temperature_text = (
+        "unavailable"
+        if temperature is None
+        else f"{temperature:.2f} C"
+    )
+
+    print(
+        "heartbeat saved/confirmed:",
+        device_id,
+        "max_thermal_zone_temperature=",
+        temperature_text,
+        flush=True,
+    )
+
+    if transition is not None:
+        print(
+            "temperature alarm:",
+            device_id,
+            transition,
+            f"temperature={temperature:.2f} C",
+            f"high={high:.2f} clear={clear:.2f}",
+            flush=True,
+        )
+
+def store_board_alarm(database, message):
+    if type(message.get("version")) is not int or message["version"] != 1:
+        raise ValueError("invalid alarm version")
+
+    for key in ("device_id", "message_id", "code", "stage"):
+        value = message.get(key)
+
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value) <= 128
+            or any(
+                ch not in
+                "abcdefghijklmnopqrstuvwxyz"
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "0123456789_-"
+                for ch in value
+            )
+        ):
+            raise ValueError("invalid alarm " + key)
+
+    timestamp = message.get("timestamp_us")
+
+    if type(timestamp) is not int or not 0 <= timestamp <= 9223372036854775807:
+        raise ValueError("invalid alarm timestamp")
+
+    if message.get("severity") not in ("error", "info"):
+        raise ValueError("invalid alarm severity")
+
+    payload = json.dumps(
+        message,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    with database:
+        database.execute(
+            """
+            INSERT OR IGNORE INTO board_alarms
+            (
+                device_id,
+                message_id,
+                received_ns,
+                timestamp_us,
+                code,
+                stage,
+                severity,
+                payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message["device_id"],
+                message["message_id"],
+                time.time_ns(),
+                timestamp,
+                message["code"],
+                message["stage"],
+                message["severity"],
+                payload,
+            ),
+        )
+
+        row = database.execute(
+            """
+            SELECT payload
+            FROM board_alarms
+            WHERE device_id=? AND message_id=?
+            """,
+            (message["device_id"], message["message_id"]),
+        ).fetchone()
+
+        if row is None or row[0] != payload:
+            raise ValueError("alarm ID conflicts with stored content")
+
+    print(
+        "board alarm saved/confirmed:",
+        message["device_id"],
+        message["code"],
+        message["stage"],
+        flush=True,
+    )
+
+
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
         print("connected:", self.client_address, flush=True)
@@ -217,6 +508,10 @@ class Handler(socketserver.BaseRequestHandler):
 
                 if message.get("type") == "event":
                     store_event(database, message)
+                    self.request.sendall(b"\x06")
+                    continue
+                if message.get("type") == "alarm":
+                    store_board_alarm(database, message)
                     self.request.sendall(b"\x06")
                     continue
 
@@ -255,13 +550,14 @@ class Handler(socketserver.BaseRequestHandler):
                         flush=True,
                     )
                 else:
-                    print(
-                        "heartbeat:",
-                        message["device_id"],
-                        flush=True,
+                    store_heartbeat(
+                        database,
+                        message,
+                        self.server.temperature_high,
+                        self.server.temperature_clear,
                     )
 
-                # 检测结果提交数据库成功后才确认
+                # 检测结果或心跳提交数据库成功后才确认。
                 self.request.sendall(b"\x06")
 
         except (
@@ -292,10 +588,51 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("--db", default="detections.sqlite3")
+    parser.add_argument("--temperature-high", type=float, default=80.0)
+    parser.add_argument("--temperature-clear", type=float, default=75.0)
+
     args = parser.parse_args()
+
+    if (
+        not math.isfinite(args.temperature_high)
+        or not math.isfinite(args.temperature_clear)
+        or not -100 <= args.temperature_clear < args.temperature_high <= 250
+    ):
+        parser.error(
+            "temperature thresholds require "
+            "-100 <= clear < high <= 250"
+        )
 
     with sqlite3.connect(args.db) as database:
         database.execute("PRAGMA journal_mode=WAL")
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS temperature_alarm_state (
+                device_id TEXT PRIMARY KEY,
+                active INTEGER NOT NULL CHECK(active IN (0, 1)),
+                temperature_c REAL NOT NULL,
+                updated_ns INTEGER NOT NULL
+            )
+            """
+        )
+
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS temperature_alarm_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                received_ns INTEGER NOT NULL,
+                timestamp_us INTEGER,
+                transition TEXT NOT NULL
+                    CHECK(transition IN ('raised', 'cleared')),
+                temperature_c REAL NOT NULL,
+                high_threshold_c REAL NOT NULL,
+                clear_threshold_c REAL NOT NULL,
+                UNIQUE(device_id, message_id)
+            )
+            """
+        )
         database.execute(
             """
             CREATE TABLE IF NOT EXISTS detections (
@@ -319,10 +656,47 @@ def main():
                 PRIMARY KEY (device_id, event_id)
             )
             """
+        )
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS heartbeats (
+                device_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                received_ns INTEGER NOT NULL,
+                timestamp_us INTEGER,
+                max_thermal_zone_temperature_c REAL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (device_id, message_id)
+            )
+            """
+        )
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS board_alarms (
+                device_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                received_ns INTEGER NOT NULL,
+                timestamp_us INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY(device_id, message_id)
+            )
+            """
+        )
+        database.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_heartbeats_device_received
+            ON heartbeats (device_id, received_ns DESC)
+            """
         )        
+               
 
     with Server((args.host, args.port), Handler) as server:
         server.database_path = args.db
+        server.temperature_high = args.temperature_high
+        server.temperature_clear = args.temperature_clear
 
         print(
             f"listening on {args.host}:{args.port}, db={args.db}",

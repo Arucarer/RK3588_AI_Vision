@@ -25,6 +25,14 @@ typedef struct
     /* 摄像头原图尺寸 */
     int original_width;
     int original_height;
+    /*
+     * 实际送入预处理的区域，坐标属于完整原图。
+     * 非 ROI 模式为 (0, 0, original_width, original_height)。
+     */
+    int roi_x;
+    int roi_y;
+    int roi_width;
+    int roi_height;
 
     /* 实际缩放后的有效图像尺寸 */
     int resized_width;
@@ -41,6 +49,8 @@ typedef struct
     /* 暂保留，兼容当前 main.cpp 的释放代码。 本版本不生成灰度图和边缘图，始终为 NULL。 */
     uint8_t *gray;
     uint8_t *edge;
+
+
 } ProcessedImage;
 
 int preprocess_init(void);
@@ -51,6 +61,15 @@ int preprocess_init(void);
  * 输入要求：紧密排列的 NV12，当前不支持额外行跨度。
  */
 int preprocess_run(FrameData *frame, ProcessedImage *output);
+
+/* 裁剪紧密排列 NV12，再复用现有预处理。 */
+int preprocess_run_roi(
+    FrameData *frame,
+    ProcessedImage *output,
+    int x,
+    int y,
+    int width,
+    int height);
 
 /*
  * 对连续存储的 UINT8 RGB 图片进行预处理。
@@ -66,6 +85,8 @@ int preprocess_rgb(const uint8_t *rgb, int width, int height, size_t rgb_size,
 void preprocess_release(ProcessedImage *output);
 
 void preprocess_deinit(void);
+
+
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,8 @@ struct AppConfig
     int stats_interval_ms = 1000;
     int camera_timeout_ms = 5000;
     int max_errors = 10;
+    bool watchdog_enabled = true;
+    int watchdog_timeout_ms = 15000;
 
     bool debug = false;
 
@@ -35,6 +37,22 @@ struct AppConfig
 
     /* 保存新事件前要求保留的可用空间，单位 MiB */
     int event_min_free_mb = 128;
+
+    bool roi_enabled = false;
+    int roi_x = 0;
+    int roi_y = 0;
+    int roi_width = 1920;
+    int roi_height = 1080;
+
+    bool edge_analysis_enabled = false;
+    int edge_low_threshold = 50;
+    int edge_high_threshold = 100;
+
+    std::string camera_device = "/dev/video22";
+    int camera_width = 3840;
+    int camera_height = 2160;
+    int camera_fps = 0;
+    std::string alarm_dir = "/opt/rk3588_ai/alarms";
 };
 
 /* 检查配置内容和数值范围 */

@@ -1,5 +1,6 @@
 #include "json_protocol.h"
-
+#include "device_status.h"
+#include "common.h"
 #include <cmath>
 #include <iomanip>
 #include <locale>
@@ -42,7 +43,24 @@ bool protocol_build_message(const std::string &device_id, const std::string &mes
     out << "{\"version\":1"
         << ",\"type\":\"" << (result != NULL ? "detection" : "heartbeat") << "\",\"device_id\":\""
         << device_id << "\",\"message_id\":\"" << message_id << "\"";
+    if(result == NULL)
+    {
+        double temperature_c = 0.0;
 
+        const bool temperature_valid =
+            device_read_max_temperature(&temperature_c);
+
+        out << ",\"timestamp_us\":" << get_time_us()
+            << ",\"device_status\":{"
+            << "\"max_thermal_zone_temperature_c\":";
+
+        if(temperature_valid)
+            out << temperature_c;
+        else
+            out << "null";
+
+        out << "}";
+    }
     if(result != NULL)
     {
         out << ",\"timestamp_us\":" << result->pts << ",\"image_width\":" << result->image_width

@@ -11,6 +11,8 @@
 #include "common.h"
 #include "tcp_client.h"
 #include "event_store.h"
+#include "roi_analysis.h"
+#include "watchdog.h"
 
 #include <time.h>
 
@@ -23,6 +25,11 @@
 #include "detection_result.h"
 #include "display.h"
 #include "app_config.h"
+#include "alarm_service.h"
+#include "detection_pipeline.h"
+
+
+
 /* STB_IMAGE_IMPLEMENTATION 只能在一个 .cpp 中定义。 仅启用 JPG、PNG 解码。 */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -102,6 +109,23 @@ static void record_stage(RuntimeStats *stats, PerfStage stage, long long started
     }
 }
 
+static void record_duration(
+    RuntimeStats *stats,
+    PerfStage stage,
+    double milliseconds)
+{
+    if(milliseconds < 0)
+        return;
+
+    StageStats *item = &stats->stages[stage];
+
+    ++item->calls;
+    item->sum_ms += milliseconds;
+
+    if(milliseconds > item->max_ms)
+        item->max_ms = milliseconds;
+}
+
 static void record_inference_perf(RuntimeStats *stats, const RKNNInferencePerf *perf)
 {
     static const PerfStage stage_map[RKNN_PERF_COUNT] = {
@@ -170,7 +194,7 @@ static void report_stats(RuntimeStats *stats, int consecutive_errors, bool force
         "rknn_input_set",      "rknn_run",  "rknn_output_get",  "rknn_output_copy",
         "rknn_output_release",
 
-        "postprocess",         "display",   "snapshot_enqueue", "frame_process"};
+        "postprocess",         "display",   "snapshot_enqueue", "frame_pipeline_latency"};
 
     for(int i = 0; i < PERF_STAGE_COUNT; ++i)
     {
@@ -289,7 +313,11 @@ int main(int argc, char *argv[])
     int preprocess_initialized = 0;
     int engine_initialized = 0;
     int display_initialized = 0;
+    int watchdog_initialized = 0;
+    int alarm_initialized = 0;
 
+    DetectionPipeline pipeline;
+    std::unique_ptr<DetectionTask> pipeline_task;
     /* TCP 后台线程是否已启动，用于退出时清理 */
     int network_initialized = 0;
 
@@ -305,6 +333,7 @@ int main(int argc, char *argv[])
 
     /* 使用单调时钟计算间隔，不受系统时间调整影响 */
     long long last_snapshot_attempt_ms = -1;
+
 
     RuntimeStats stats = {};
 
@@ -326,6 +355,41 @@ int main(int argc, char *argv[])
 
     LOG_INFO("model:%s", model_path);
 
+    LOG_INFO(
+        "CONFIG roi_enabled=%s roi=(%d,%d,%d,%d) edge_analysis=%s thresholds=%d/%d",
+        config.roi_enabled ? "true" : "false",
+        config.roi_x,
+        config.roi_y,
+        config.roi_width,
+        config.roi_height,
+        config.edge_analysis_enabled ? "true" : "false",
+        config.edge_low_threshold,
+        config.edge_high_threshold
+    );
+    LOG_INFO("CONFIG watchdog_enabled=%s timeout_ms=%d",
+            config.watchdog_enabled ? "true" : "false",
+            config.watchdog_timeout_ms);
+    if(alarm_service_start(config.alarm_dir, config.device_id) != 0)
+    {
+        LOG_ERR("alarm service initialization failed");
+        goto EXIT;
+    }
+
+    alarm_initialized = 1;
+
+    if(config.watchdog_enabled)
+    {
+        if(app_watchdog_start(config.watchdog_timeout_ms) != 0)
+        {
+            LOG_ERR("watchdog initialization failed");
+            goto EXIT;
+        }
+
+        watchdog_initialized = 1;
+    }
+
+    app_watchdog_feed("rknn_init");
+
     /* 1. RKNN初始化 */
 
     if(rknn_engine_init(&engine, model_path) != 0)
@@ -337,7 +401,7 @@ int main(int argc, char *argv[])
 
     engine_initialized = 1;
     /* 2. 初始化图像预处理 */
-
+    app_watchdog_feed("preprocess_init");
     if(preprocess_init() != 0)
     {
         LOG_ERR("preprocess init failed");
@@ -346,6 +410,7 @@ int main(int argc, char *argv[])
     }
     preprocess_initialized = 1;
 
+    app_watchdog_feed("display_init");
     if(display_init() != 0)
     {
         LOG_ERR("display init failed");
@@ -357,6 +422,7 @@ int main(int argc, char *argv[])
 
     if(config.network_enabled)
     {
+        app_watchdog_feed("network_init");
         LOG_INFO("TCP config server=%s:%d device=%s report_interval_ms=%d",
                  config.server_ip.c_str(), config.server_port, config.device_id.c_str(),
                  config.report_interval_ms);
@@ -375,7 +441,7 @@ int main(int argc, char *argv[])
     }
 
     /* 3. 初始化Camera Buffer */
-
+    app_watchdog_feed("camera_buffer_init");
     if(camera_buffer_init() != 0)
     {
         LOG_ERR("camera buffer init failed");
@@ -386,8 +452,18 @@ int main(int argc, char *argv[])
     camera_buffer_initialized = 1;
 
     /* 4. 初始化V4L2摄像头 */
+    LOG_INFO("CONFIG camera_device=%s size=%dx%d requested_fps=%d",
+            config.camera_device.c_str(),
+            config.camera_width,
+            config.camera_height,
+            config.camera_fps);
 
-    if(v4l2_init() != 0)
+    app_watchdog_feed("v4l2_init");
+
+    if(v4l2_init(config.camera_device.c_str(),
+                config.camera_width,
+                config.camera_height,
+                config.camera_fps) != 0)
     {
         LOG_ERR("v4l2 init failed");
 
@@ -397,7 +473,7 @@ int main(int argc, char *argv[])
     v4l2_initialized = 1;
 
     /* 5. 创建摄像头采集线程 */
-
+    app_watchdog_feed("camera_thread_create");
     ret = pthread_create(&camera_tid, NULL, camera_thread, NULL);
 
     if(ret != 0)
@@ -411,27 +487,28 @@ int main(int argc, char *argv[])
 
     LOG_INFO("camera thread start");
 
+    if(pipeline.start(config, &engine) != 0)
+    {
+        LOG_ERR("pipeline worker initialization failed");
+        goto EXIT;
+    }
     exit_code = 0;
     last_frame_us = monotonic_us();
+
+
     stats.started_us = last_frame_us;
 
+    app_watchdog_feed("camera_wait");
     while(g_run_state == RUN_STATE_OK)
     {
-        const int pop_ret = camera_buffer_pop(&frame);
+        const int pop_ret = pipeline.pop(pipeline_task);
 
         if(g_run_state != RUN_STATE_OK)
-        {
-            if(pop_ret == 0)
-            {
-                camera_buffer_release(&frame);
-            }
-
             break;
-        }
 
         if(pop_ret < 0)
         {
-            LOG_ERR("camera buffer stopped unexpectedly");
+            LOG_ERR("detection pipeline stopped unexpectedly");
             exit_code = 1;
             break;
         }
@@ -440,105 +517,56 @@ int main(int argc, char *argv[])
         {
             stats.wait_timeouts++;
 
-            report_stats(&stats, consecutive_errors, false, config.stats_interval_ms);
+            report_stats(
+                &stats,
+                consecutive_errors,
+                false,
+                config.stats_interval_ms);
 
-            if(monotonic_us() - last_frame_us >= config.camera_timeout_ms * 1000LL)
-            {
-                LOG_ERR("camera timeout: no frame for %d ms", config.camera_timeout_ms);
-
-                exit_code = 1;
-                break;
-            }
-
+            /*
+            * 无帧超时由预处理线程判断。
+            * 等待结果期间不喂狗，避免掩盖推理线程卡死。
+            */
             continue;
         }
 
-        last_frame_us = monotonic_us();
-
         /*
-         * frame_process：
-         * 从取得帧后开始，到释放本帧资源结束。
-         * 不包含等待摄像头、后台JPEG保存、统计日志打印。
-         */
-        const long long frame_started = monotonic_us();
+        * 原图所有权从任务转移到 main 的 frame。
+        * 清空任务里的副本，避免任务析构时重复释放。
+        */
+        frame = pipeline_task->frame;
+        memset(&pipeline_task->frame, 0, sizeof(pipeline_task->frame));
+
+        detect_result = pipeline_task->result;
+
+        const long long frame_started = pipeline_task->started_us;
+
+        record_duration(
+            &stats, PERF_PREPROCESS, pipeline_task->preprocess_ms);
+
+        record_duration(
+            &stats, PERF_INFERENCE, pipeline_task->inference_ms);
+
+        record_duration(
+            &stats, PERF_POSTPROCESS, pipeline_task->postprocess_ms);
+
+        record_inference_perf(&stats, &pipeline_task->rknn_perf);
 
         stats.frames++;
 
         bool frame_ok = false;
-        bool fatal_error = false;
         const char *failed_stage = "unknown";
 
-        memset(&detect_result, 0, sizeof(detect_result));
-
-        /* 单次 do/while： 任一阶段失败后跳到统一清理位置。 */
         do
         {
-            /* 1. 预处理 */
-            failed_stage = "preprocess";
-
-            const long long preprocess_started = monotonic_us();
-
-            const int preprocess_ret = preprocess_run(&frame, &processed_image);
-
-            record_stage(&stats, PERF_PREPROCESS, preprocess_started);
-
-            if(preprocess_ret != 0)
+            if(pipeline_task->error != nullptr)
             {
+                failed_stage = pipeline_task->error;
                 break;
             }
 
-            /* 模型与预处理尺寸不匹配属于配置错误， 无需重复尝试10帧。 */
-            if(processed_image.rgb_width != engine.input_width ||
-               processed_image.rgb_height != engine.input_height || engine.input_channel != 3)
-            {
-                failed_stage = "input_shape";
-                fatal_error = true;
-                LOG_ERR("model input shape does not match preprocessing");
-                break;
-            }
-
-            /* 2. 推理 */
-            failed_stage = "inference";
-
-            const long long inference_started = monotonic_us();
-
-            const int inference_ret = rknn_engine_inference(&engine, processed_image.rgb,
-                                                            MODEL_INPUT_SIZE, &inference_result);
-
-            const double inference_ms = (monotonic_us() - inference_started) / 1000.0;
-
-            record_stage(&stats, PERF_INFERENCE, inference_started);
-
-            record_inference_perf(&stats, &engine.last_perf);
-
-            if(inference_ret != 0)
-            {
-                break;
-            }
-
-            /* 3. 后处理 */
-            failed_stage = "postprocess";
-
-            const long long postprocess_started = monotonic_us();
-
-            const int post_ret =
-                postprocess_result(&engine, &inference_result, &processed_image, frame.pts,
-                                   config.confidence, config.nms, &detect_result);
-
-            record_stage(&stats, PERF_POSTPROCESS, postprocess_started);
-
-            if(post_ret != 0)
-            {
-                break;
-            }
-
-            detect_result.image_width = frame.width;
-            detect_result.image_height = frame.height;
-            detect_result.pts = frame.pts;
-            detect_result.inference_time_ms = (float)inference_ms;
-
-            /* 4. 显示 */
             failed_stage = "display";
+            app_watchdog_feed("display");
 
             const long long display_started = monotonic_us();
 
@@ -547,20 +575,20 @@ int main(int argc, char *argv[])
             record_stage(&stats, PERF_DISPLAY, display_started);
 
             if(display_ret != 0)
-            {
                 break;
-            }
 
-            /* 检测和显示都成功，即完成一帧核心业务。 抓拍提交失败不会将本帧判定为检测失败。 */
             frame_ok = true;
-            /* 周期采样上报。 这里只复制 DetectionResult，不进行网络发送。 */
+
             if(network_initialized)
             {
                 const long long now_ms = monotonic_us() / 1000;
 
-                if(last_report_ms < 0 || now_ms - last_report_ms >= config.report_interval_ms)
+                if(last_report_ms < 0 ||
+                now_ms - last_report_ms >= config.report_interval_ms)
                 {
                     last_report_ms = now_ms;
+
+                    app_watchdog_feed("network_submit");
 
                     const int submitted = tcp_client_submit(&detect_result);
 
@@ -572,7 +600,9 @@ int main(int argc, char *argv[])
                     {
                         network_dropped++;
 
-                        LOG_INFO("TCP queue full; dropped_total=%lu", network_dropped);
+                        LOG_INFO(
+                            "TCP queue full; dropped_total=%lu",
+                            network_dropped);
                     }
                     else
                     {
@@ -582,20 +612,24 @@ int main(int argc, char *argv[])
                 }
             }
 
-            /* 5. 按间隔提交后台抓拍 */
             if(config.snapshot_enabled && detect_result.count > 0)
             {
                 const long long now_ms = monotonic_us() / 1000;
 
                 if(last_snapshot_attempt_ms < 0 ||
-                   now_ms - last_snapshot_attempt_ms >= config.snapshot_interval_ms)
+                now_ms - last_snapshot_attempt_ms >=
+                    config.snapshot_interval_ms)
                 {
                     last_snapshot_attempt_ms = now_ms;
+
+                    app_watchdog_feed("snapshot_enqueue");
 
                     const long long enqueue_started = monotonic_us();
 
                     const int queued = display_save_snapshot(
-                        config.snapshot_dir.c_str(), config.device_id.c_str(), &detect_result);
+                        config.snapshot_dir.c_str(),
+                        config.device_id.c_str(),
+                        &detect_result);
 
                     record_stage(&stats, PERF_ENQUEUE, enqueue_started);
 
@@ -610,32 +644,57 @@ int main(int argc, char *argv[])
                     else
                     {
                         stats.snapshot_failed++;
+
                         LOG_ERR("snapshot enqueue failed");
+
+                        if(!alarm_raise(
+                            "snapshot_enqueue_failed",
+                            "snapshot"))
+                        {
+                            LOG_ERR("snapshot alarm persistence failed");
+                        }
                     }
                 }
             }
 
-            /* 检测框详情改为调试日志。 g_debug_logs=0 时不打印，HDMI文字仍正常显示。 */
             for(int i = 0; i < detect_result.count; ++i)
             {
                 const DetectionBox *box = &detect_result.boxes[i];
 
-                LOG_DEBUG("box[%d] class=%d confidence=%.3f "
-                          "xyxy=(%.1f,%.1f,%.1f,%.1f)",
-                          i, box->class_id, box->confidence, box->x1, box->y1, box->x2, box->y2);
+                LOG_DEBUG(
+                    "box[%d] class=%d confidence=%.3f "
+                    "xyxy=(%.1f,%.1f,%.1f,%.1f)",
+                    i,
+                    box->class_id,
+                    box->confidence,
+                    box->x1,
+                    box->y1,
+                    box->x2,
+                    box->y2);
             }
         } while(false);
 
-        /* 各阶段成功或失败，都经过这里清理 */
-        rknn_engine_result_release(&inference_result);
-        preprocess_release(&processed_image);
-        camera_buffer_release(&frame);
+        app_watchdog_feed("frame_release");
 
+        camera_buffer_release(&frame);
+        pipeline_task.reset();
+
+        /*
+        * 现在包含预处理、队列等待、推理及主线程显示提交时间。
+        * 不再是单线程各阶段耗时相加的含义。
+        */
         record_stage(&stats, PERF_PROCESS, frame_started);
 
         if(frame_ok)
         {
             stats.successful++;
+
+            if(consecutive_errors > 0 &&
+            !alarm_raise("frame_recovered", "pipeline"))
+            {
+                LOG_ERR("recovery alarm persistence failed");
+            }
+
             consecutive_errors = 0;
         }
         else
@@ -643,85 +702,139 @@ int main(int argc, char *argv[])
             stats.failed++;
             consecutive_errors++;
 
-            LOG_ERR("frame failed stage=%s consecutive=%d/%d", failed_stage, consecutive_errors,
-                    max_consecutive_errors);
+            if(consecutive_errors == 1 &&
+            !alarm_raise("frame_failed", failed_stage))
+            {
+                LOG_ERR("frame alarm persistence failed");
+            }
+
+            LOG_ERR(
+                "frame failed stage=%s consecutive=%d/%d",
+                failed_stage,
+                consecutive_errors,
+                max_consecutive_errors);
         }
 
-        report_stats(&stats, consecutive_errors, false, config.stats_interval_ms);
+        report_stats(
+            &stats,
+            consecutive_errors,
+            false,
+            config.stats_interval_ms);
 
-        if(fatal_error || consecutive_errors >= max_consecutive_errors)
+        if(consecutive_errors >= max_consecutive_errors)
         {
-            LOG_ERR("stopping after unrecoverable/repeated processing errors");
+            LOG_ERR("stopping after repeated processing errors");
             exit_code = 1;
             break;
         }
+
+        app_watchdog_feed("pipeline_wait");
     }
+
 
     /* 正常退出或异常退出前，输出不足一秒的剩余统计 */
     report_stats(&stats, consecutive_errors, true, config.stats_interval_ms);
 
 EXIT:
+    app_watchdog_feed("shutdown");
+    g_run_state = RUN_STATE_EXIT;
+
+    if(exit_code != 0 && alarm_initialized &&
+       !alarm_raise("application_exit_error", "main"))
+    {
+        LOG_ERR("exit alarm persistence failed");
+    }
 
     LOG_INFO("AI application exit");
 
-    g_run_state = RUN_STATE_EXIT;
+    /*
+     * 先停止流水线、唤醒队列并等待工作线程退出，
+     * 再释放摄像头、预处理模块和 RKNN。
+     */
+    app_watchdog_feed("pipeline_stop");
+    pipeline.stop();
+    pipeline_task.reset();
 
-    /* 停止缓存，唤醒等待中的线程 */
     if(camera_buffer_initialized)
     {
+        app_watchdog_feed("camera_buffer_stop");
         camera_buffer_stop();
     }
 
-    /* 等待采集线程退出，只执行一次 */
     if(camera_thread_created)
     {
+        app_watchdog_feed("camera_thread_join");
         pthread_join(camera_tid, NULL);
         camera_thread_created = 0;
     }
 
     if(network_initialized)
     {
+        app_watchdog_feed("network_stop");
         tcp_client_stop();
         network_initialized = 0;
 
-        LOG_INFO("TCP submit totals queued=%lu dropped=%lu errors=%lu", network_queued,
-                 network_dropped, network_submit_errors);
+        LOG_INFO("TCP submit totals queued=%lu dropped=%lu errors=%lu",
+                 network_queued, network_dropped, network_submit_errors);
     }
 
     if(display_initialized)
     {
+        app_watchdog_feed("display_deinit");
         display_deinit();
+        display_initialized = 0;
     }
 
-    /* 释放可能残留的推理输出 */
+    app_watchdog_feed("remaining_buffers_release");
+
     rknn_engine_result_release(&inference_result);
-
-    /* 释放可能残留的摄像头帧副本 */
     camera_buffer_release(&frame);
-
     preprocess_release(&processed_image);
 
     if(v4l2_initialized)
     {
+        app_watchdog_feed("v4l2_deinit");
         v4l2_deinit();
+        v4l2_initialized = 0;
     }
 
     if(camera_buffer_initialized)
     {
+        app_watchdog_feed("camera_buffer_deinit");
         camera_buffer_deinit();
+        camera_buffer_initialized = 0;
     }
 
     if(preprocess_initialized)
     {
+        app_watchdog_feed("preprocess_deinit");
         preprocess_deinit();
+        preprocess_initialized = 0;
     }
 
     if(engine_initialized)
     {
+        app_watchdog_feed("rknn_release");
         rknn_engine_release(&engine);
+        engine_initialized = 0;
     }
 
+    if(alarm_initialized)
+    {
+        app_watchdog_feed("alarm_stop");
+        alarm_service_stop();
+        alarm_initialized = 0;
+    }
+
+    app_watchdog_feed("shutdown_complete");
     LOG_INFO("RK3588 AI Vision stopped");
+
+    if(watchdog_initialized)
+    {
+        app_watchdog_stop();
+        watchdog_initialized = 0;
+    }
+
     return exit_code;
 }
 

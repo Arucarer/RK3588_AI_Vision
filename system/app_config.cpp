@@ -114,6 +114,19 @@ bool validate_config(const AppConfig &config, std::string &error)
         error = "max_errors must be 1..1000";
         return false;
     }
+    if(config.watchdog_timeout_ms < 1000 ||
+    config.watchdog_timeout_ms > 600000)
+    {
+        error = "watchdog_timeout_ms must be 1000..600000";
+        return false;
+    }
+
+    if(config.watchdog_enabled &&
+    config.watchdog_timeout_ms <= config.camera_timeout_ms)
+    {
+        error = "watchdog_timeout_ms must be greater than camera_timeout_ms";
+        return false;
+    }
     struct in_addr address;
 
     if(inet_pton(AF_INET, config.server_ip.c_str(), &address) != 1)
@@ -151,6 +164,68 @@ bool validate_config(const AppConfig &config, std::string &error)
     if(config.event_min_free_mb < 16 || config.event_min_free_mb > 1048576)
     {
         error = "event_min_free_mb must be 16..1048576";
+        return false;
+    }
+    if(config.roi_enabled)
+    {
+        /*
+         * NV12 裁剪起点和高度需要偶数对齐。
+         * 本版紧密排列的 ROI 宽度要求 16 对齐，
+         * 以适配当前 RGA 路径。
+         */
+        if(config.roi_x < 0 || config.roi_y < 0 ||
+           config.roi_x > 16384 || config.roi_y > 16384 ||
+           config.roi_width < 16 || config.roi_width > 16384 ||
+           config.roi_height < 2 || config.roi_height > 16384 ||
+           config.roi_x % 2 != 0 || config.roi_y % 2 != 0 ||
+           config.roi_width % 16 != 0 || config.roi_height % 2 != 0)
+        {
+            error = "invalid ROI: x/y/height must be even; width must be a multiple of 16";
+            return false;
+        }
+    }
+
+    if(config.edge_low_threshold < 1 ||
+       config.edge_high_threshold <= config.edge_low_threshold ||
+       config.edge_high_threshold > 2048)
+    {
+        error = "edge thresholds require 1 <= low < high <= 2048";
+        return false;
+    }
+    if(config.camera_device.compare(0, 5, "/dev/") != 0 ||
+    config.camera_device.size() <= 5)
+    {
+        error = "camera_device must be a device path under /dev/";
+        return false;
+    }
+
+    if(config.camera_width < 16 || config.camera_width > 8192 ||
+    config.camera_height < 2 || config.camera_height > 8192 ||
+    config.camera_width % 16 != 0 ||
+    config.camera_height % 2 != 0)
+    {
+        error = "invalid camera size: width requires 16 alignment; height requires even alignment";
+        return false;
+    }
+
+    if(config.camera_fps < 0 || config.camera_fps > 120)
+    {
+        error = "camera_fps must be 0..120; 0 keeps the driver setting";
+        return false;
+    }
+
+    if(config.roi_enabled &&
+    (config.roi_width > config.camera_width ||
+        config.roi_height > config.camera_height ||
+        config.roi_x > config.camera_width - config.roi_width ||
+        config.roi_y > config.camera_height - config.roi_height))
+    {
+        error = "ROI is outside configured camera dimensions";
+        return false;
+    }
+    if(config.alarm_dir.empty() || config.alarm_dir[0] != '/')
+    {
+        error = "alarm_dir must be an absolute path";
         return false;
     }
     return true;
@@ -251,6 +326,14 @@ bool load_config(const char *path, AppConfig &config, std::string &error)
             {
                 candidate.max_errors = parse_integer(value);
             }
+            else if(key == "watchdog_enabled")
+            {
+                candidate.watchdog_enabled = parse_boolean(value);
+            }
+            else if(key == "watchdog_timeout_ms")
+            {
+                candidate.watchdog_timeout_ms = parse_integer(value);
+            }            
             else if(key == "debug")
             {
                 candidate.debug = parse_boolean(value);
@@ -282,6 +365,42 @@ bool load_config(const char *path, AppConfig &config, std::string &error)
             else if(key == "event_min_free_mb")
             {
                 candidate.event_min_free_mb = parse_integer(value);
+            }
+            else if(key == "roi_enabled")
+                candidate.roi_enabled = parse_boolean(value);
+            else if(key == "roi_x")
+                candidate.roi_x = parse_integer(value);
+            else if(key == "roi_y")
+                candidate.roi_y = parse_integer(value);
+            else if(key == "roi_width")
+                candidate.roi_width = parse_integer(value);
+            else if(key == "roi_height")
+                candidate.roi_height = parse_integer(value);
+            else if(key == "edge_analysis_enabled")
+                candidate.edge_analysis_enabled = parse_boolean(value);
+            else if(key == "edge_low_threshold")
+                candidate.edge_low_threshold = parse_integer(value);
+            else if(key == "edge_high_threshold")
+                candidate.edge_high_threshold = parse_integer(value);
+            else if(key == "camera_device")
+            {
+                candidate.camera_device = value;
+            }
+            else if(key == "camera_width")
+            {
+                candidate.camera_width = parse_integer(value);
+            }
+            else if(key == "camera_height")
+            {
+                candidate.camera_height = parse_integer(value);
+            }
+            else if(key == "camera_fps")
+            {
+                candidate.camera_fps = parse_integer(value);
+            }
+            else if(key == "alarm_dir")
+            {
+                candidate.alarm_dir = value;
             }
             else
             {

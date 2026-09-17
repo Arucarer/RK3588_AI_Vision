@@ -1,5 +1,8 @@
 #include "preprocess.h"
 #include "resize.h"
+#include <climits>
+#include <vector>
+#include <new>
 
 #include <stdlib.h>
 #include <string.h>
@@ -154,6 +157,10 @@ int preprocess_run(FrameData *frame, ProcessedImage *output)
 
     output->original_width = frame->width;
     output->original_height = frame->height;
+    output->roi_x = 0;
+    output->roi_y = 0;
+    output->roi_width = frame->width;
+    output->roi_height = frame->height;
 
     output->resized_width = resized_width;
     output->resized_height = resized_height;
@@ -265,6 +272,11 @@ int preprocess_rgb(const uint8_t *rgb, int width, int height, size_t rgb_size,
 
     output->original_width = width;
     output->original_height = height;
+    output->roi_x = 0;
+    output->roi_y = 0;
+    output->roi_width = width;
+    output->roi_height = height;
+
     output->resized_width = resized_width;
     output->resized_height = resized_height;
 
@@ -274,4 +286,119 @@ int preprocess_rgb(const uint8_t *rgb, int width, int height, size_t rgb_size,
     output->pad_top = pad_top;
 
     return 0;
+}
+
+int preprocess_run_roi(
+    FrameData *frame,
+    ProcessedImage *output,
+    int x,
+    int y,
+    int width,
+    int height)
+{
+    if(frame == NULL || output == NULL ||
+       frame->vir_addr == NULL ||
+       frame->width <= 0 || frame->height <= 0 ||
+       frame->width % 2 != 0 || frame->height % 2 != 0 ||
+       frame->len <= 0 ||
+       x < 0 || y < 0 ||
+       width < 16 || height < 2 ||
+       x % 2 != 0 || y % 2 != 0 ||
+       width % 16 != 0 || height % 2 != 0 ||
+       width > frame->width || height > frame->height ||
+       x > frame->width - width ||
+       y > frame->height - height)
+    {
+        LOG_ERR("invalid NV12 ROI");
+        return -1;
+    }
+
+    if(output->rgb != NULL || output->gray != NULL || output->edge != NULL)
+    {
+        LOG_ERR("release previous processed image first");
+        return -1;
+    }
+
+    const uint64_t source_pixels =
+        static_cast<uint64_t>(frame->width) * frame->height;
+
+    if(static_cast<uint64_t>(frame->len) !=
+       source_pixels + source_pixels / 2)
+    {
+        LOG_ERR("ROI requires tightly packed NV12");
+        return -1;
+    }
+
+    const uint64_t roi_pixels = static_cast<uint64_t>(width) * height;
+    const uint64_t roi_bytes = roi_pixels + roi_pixels / 2;
+
+    if(roi_bytes > INT_MAX)
+        return -1;
+
+    try
+    {
+        std::vector<uint8_t> cropped(static_cast<size_t>(roi_bytes));
+
+        const uint8_t *source =
+            static_cast<const uint8_t *>(frame->vir_addr);
+
+        /* 复制 Y，每行 width 字节。 */
+        for(int row = 0; row < height; ++row)
+        {
+            memcpy(
+                cropped.data() + static_cast<size_t>(row) * width,
+                source + static_cast<size_t>(y + row) * frame->width + x,
+                width
+            );
+        }
+
+        /*
+         * NV12 的 UV 按字节交错存放。
+         * x 已偶数对齐，UV 每行仍复制 width 字节。
+         */
+        const uint8_t *source_uv = source + source_pixels;
+        uint8_t *target_uv = cropped.data() + roi_pixels;
+
+        for(int row = 0; row < height / 2; ++row)
+        {
+            memcpy(
+                target_uv + static_cast<size_t>(row) * width,
+                source_uv +
+                    static_cast<size_t>(y / 2 + row) * frame->width + x,
+                width
+            );
+        }
+
+        FrameData region = *frame;
+        region.vir_addr = cropped.data();
+        region.width = width;
+        region.height = height;
+        region.len = static_cast<int>(roi_bytes);
+        region.index = -1;
+        region.dma_fd = -1;
+
+        /*
+         * 当前 RGA imresize 是同步调用。
+         * preprocess_run 返回后，中间 NV12 副本才释放。
+         */
+        const int ret = preprocess_run(&region, output);
+
+        if(ret != 0)
+            return ret;
+
+        /* scale_x/y 保持相对于 ROI 的缩放比例。 */
+        output->original_width = frame->width;
+        output->original_height = frame->height;
+        output->roi_x = x;
+        output->roi_y = y;
+        output->roi_width = width;
+        output->roi_height = height;
+
+        return 0;
+    }
+    catch(const std::bad_alloc &)
+    {
+        LOG_ERR("allocate ROI buffer failed");
+        return -1;
+    }
 }

@@ -2,6 +2,7 @@
 #include "json_protocol.h"
 #include "common.h"
 #include "event_store.h"
+#include "alarm_service.h"
 
 #include <algorithm>
 #include <vector>
@@ -358,13 +359,21 @@ void *network_thread(void *)
     long long next_heartbeat = 0;
     long long next_event_scan = 0;
     std::string event_cursor;
-
+    bool outage_reported = false;
     while(!stopping.load())
     {
         if(fd < 0)
         {
             fd = connect_server();
+            if(!stopping.load() && !outage_reported)
+            {
+                outage_reported = alarm_raise(
+                    "network_unavailable",
+                    "tcp_connect");
 
+                if(!outage_reported)
+                    LOG_ERR("network alarm persistence failed");
+            }
             if(fd < 0)
             {
                 if(!stopping.load())
@@ -405,6 +414,11 @@ void *network_thread(void *)
             next_heartbeat = monotonic_us() + HEARTBEAT_INTERVAL_MS * 1000LL;
 
             LOG_INFO("TCP heartbeat acknowledged");
+            if(outage_reported &&
+            alarm_raise("network_recovered", "tcp_heartbeat"))
+            {
+                outage_reported = false;
+            }
         }
         /*
          * 每次扫描最多处理一个事件。
@@ -414,10 +428,33 @@ void *network_thread(void *)
         {
             bool connection_ok = true;
 
-            try
+        try
+        {
+            std::string alarm_id;
+            std::string alarm_json;
+
+            const int pending = alarm_pending(alarm_id, alarm_json);
+
+            if(pending < 0)
+            {
+                LOG_ERR("cannot read pending alarms; files retained");
+            }
+
+            if(pending == 1)
+            {
+                connection_ok = send_and_confirm(fd, alarm_json);
+
+                if(connection_ok && !alarm_confirm(alarm_id))
+                {
+                    LOG_ERR("alarm ACK received but local cleanup failed");
+                }
+            }
+
+            if(connection_ok)
             {
                 connection_ok = upload_one_event(fd, event_cursor);
             }
+        }
             catch(const std::bad_alloc &)
             {
                 LOG_ERR("event upload allocation failed; event retained");

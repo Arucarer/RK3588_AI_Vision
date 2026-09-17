@@ -14,7 +14,7 @@ extern "C"
 {
 #endif
 
-#define V4L2_DEV "/dev/video22"
+
 
 typedef struct
 {
@@ -23,7 +23,7 @@ typedef struct
     int dma_fd;    // DMA-BUF文件描述符
 } V4l2Buffer;
 
-int v4l2_init(void);
+int v4l2_init(const char *device, int width, int height, int fps);
 int v4l2_capture_frame(FrameData *frame);
 int v4l2_release_frame(int index);
 void v4l2_deinit(void);

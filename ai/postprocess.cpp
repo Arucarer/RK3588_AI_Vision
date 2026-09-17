@@ -94,6 +94,16 @@ int postprocess_result(const RKNNEngine *engine, const RKNNInferenceResult *infe
         return -1;
     }
 
+    if(image->roi_x < 0 || image->roi_y < 0 ||
+       image->roi_width <= 0 || image->roi_height <= 0 ||
+       image->roi_width > image->original_width ||
+       image->roi_height > image->original_height ||
+       image->roi_x > image->original_width - image->roi_width ||
+       image->roi_y > image->original_height - image->roi_height)
+    {
+        LOG_ERR("invalid ROI geometry in postprocess");
+        return -1;
+    }
     /* 2. 只接受当前模型的单输出布局 */
     if(engine->output_num != 1 || inference->count != 1)
     {
@@ -237,10 +247,11 @@ int postprocess_result(const RKNNEngine *engine, const RKNNInferenceResult *infe
         }
 
         /* 框边界使用连续坐标，允许右边界等于 width、 下边界等于 height。绘制时再转为合法像素索引。 */
-        box.x1 = clamp_coordinate(box.x1, (float)image->original_width);
-        box.y1 = clamp_coordinate(box.y1, (float)image->original_height);
-        box.x2 = clamp_coordinate(box.x2, (float)image->original_width);
-        box.y2 = clamp_coordinate(box.y2, (float)image->original_height);
+        /* 先裁到 ROI 边界，再加 ROI 偏移恢复完整原图坐标。 */
+        box.x1 = clamp_coordinate(box.x1, (float)image->roi_width) + image->roi_x;
+        box.y1 = clamp_coordinate(box.y1, (float)image->roi_height) + image->roi_y;
+        box.x2 = clamp_coordinate(box.x2, (float)image->roi_width) + image->roi_x;
+        box.y2 = clamp_coordinate(box.y2, (float)image->roi_height) + image->roi_y;
 
         /* 丢弃完全落在补边区等无效框 */
         if(box.x2 <= box.x1 || box.y2 <= box.y1)

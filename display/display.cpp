@@ -1,6 +1,6 @@
 #include "display.h"
 #include "event_store.h"
-
+#include "alarm_service.h"
 #include "drm_display.h"
 #include "rga_display.h"
 #include "json_protocol.h"
@@ -743,6 +743,25 @@ static void *snapshot_thread_main(void *arg)
 
         const int saved = snapshot_write_file(task);
 
+        /* 每段连续故障只持久化一次，恢复后允许再次告警。 */
+        static bool storage_failed = false;
+
+        if(saved <= 0 && !storage_failed)
+        {
+            storage_failed = alarm_raise(
+                saved == 0
+                    ? "snapshot_capacity_blocked"
+                    : "snapshot_write_failed",
+                "snapshot");
+
+            if(!storage_failed)
+                LOG_ERR("snapshot alarm persistence failed");
+        }
+        else if(saved > 0 && storage_failed)
+        {
+            if(alarm_raise("snapshot_recovered", "snapshot"))
+                storage_failed = false;
+        }        
         const double elapsed_ms = (monotonic_us() - started) / 1000.0;
 
         if(saved > 0)

@@ -156,7 +156,8 @@ LDLIBS := \
 C_SRCS := \
 $(CAMERA_DIR)/v4l2_capture.c \
 $(CAMERA_DIR)/camera_buffer.c \
-$(CAMERA_DIR)/camera_thread.c
+$(CAMERA_DIR)/camera_thread.c \
+$(SYSTEM_DIR)/watchdog.c
 
 # ============================================================
 # C++源码
@@ -175,6 +176,9 @@ $(CAMERA_DIR)/camera_thread.c
 
 CPP_SRCS := \
 $(APP_DIR)/main.cpp \
+$(APP_DIR)/detection_pipeline.cpp \
+$(SYSTEM_DIR)/alarm_service.cpp \
+$(SYSTEM_DIR)/device_status.cpp \
 $(SYSTEM_DIR)/app_config.cpp \
 $(IMAGE_DIR)/preprocess.cpp \
 $(IMAGE_DIR)/resize.cpp \
@@ -188,6 +192,7 @@ $(DISPLAY_DIR)/drm_display.cpp \
 $(NETWORK_DIR)/tcp_client.cpp \
 $(NETWORK_DIR)/json_protocol.cpp \
 $(STORAGE_DIR)/event_store.cpp \
+$(IMAGE_DIR)/roi_analysis.cpp \
 $(DISPLAY_DIR)/rga_display.cpp
 
 # ==================== 目标文件 ====================
