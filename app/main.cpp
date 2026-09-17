@@ -350,8 +350,11 @@ int main(int argc, char *argv[])
                  config.server_ip.c_str(), config.server_port, config.device_id.c_str(),
                  config.report_interval_ms);
 
-        if(tcp_client_start(config.server_ip.c_str(), config.server_port,
-                            config.device_id.c_str()) != 0)
+        if(tcp_client_start(
+                config.server_ip.c_str(),
+                config.server_port,
+                config.device_id.c_str(),
+                config.snapshot_dir.c_str()) != 0)
         {
             LOG_ERR("TCP worker initialization failed");
             goto EXIT;

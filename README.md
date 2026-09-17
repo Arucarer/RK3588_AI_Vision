@@ -287,60 +287,41 @@ Cloud Server
 
 # 五、工程目录结构
 
+以下为当前目录职责；预留文件不代表功能已完成。
 
-```
-RK3588_AI_Vision
-│
-├── app
-│   └── main.c                  # 程序入口
-│
-├── camera                      # 摄像头采集模块
-│   ├── v4l2_capture.c
-│   ├── v4l2_capture.h
-│   ├── camera_buffer.c
-│   └── camera_thread.c
-│
-├── image                       # 图像处理模块
-│   ├── preprocess.c
-│   ├── resize.c
-│   ├── color_convert.c
-│   └── roi.c
-│
-├── ai                          # RKNN推理模块
-│   ├── rknn_engine.c
-│   ├── rknn_model.c
-│   ├── postprocess.c
-│   └── detection_result.h
-│
-├── network                     # 云边通信模块
-│   ├── tcp_client.c
-│   ├── json_protocol.c
-│   └── heartbeat.c
-│
-├── storage                     # 数据缓存模块
-│   ├── ring_buffer.c
-│   └── image_cache.c
-│
-├── system                      # 系统管理模块
-│   ├── log.c
-│   ├── watchdog.c
-│   └── config.c
-│
-├── model                       # AI模型文件
-│
-├── config                      # 配置文件
-│
-├── include                     # 公共头文件
-│
-├── lib                         # 第三方库
-│
-├── scripts                     # 部署脚本
-│
-├── build                       # 编译目录
-│
-└── Makefile
+```text
+RK3588_AI_Vision/
+├── app/main.cpp             # 主程序、单图模式和业务调度
+├── camera/                  # V4L2、最新帧缓存和采集线程
+├── image/                   # 预处理、RGA 缩放，以及待接入的 ROI/传统算法
+├── ai/                      # RKNN 引擎、后处理、统一检测结果定义
+├── display/                 # DRM/RGA 显示、绘图、后台缺陷事件保存
+├── network/                 # TCP 工作线程（含心跳）、JSON 序列化
+├── system/app_config.*      # 当前配置解析与校验
+├── system/log.*             # 日志模块预留；当前使用 common.h 日志宏
+├── system/watchdog.*        # 守护模块预留
+├── storage/                 # 持久化缓存模块预留
+├── include/                 # common.h、version.h
+├── config/app.conf          # 当前唯一运行配置文件
+├── tools/tcp_server.py      # Ubuntu TCP 接收端与 SQLite 存储
+├── scripts/                 # 单图验证脚本，以及部署/守护预留脚本
+├── third_party/stb/         # 图像解码和 JPEG 编码
+├── model/                   # 模型目录预留，实际模型不随源码提交
+├── lib/                     # 库资料预留，当前依赖从 SDK sysroot 链接
+├── docs/                    # 文档
+├── tests/                   # 测试预留
+├── output/                  # 服务端运行产物
+├── build/                   # 编译产物
+├── bin/                     # 可执行程序
+├── .clang-format            # 排版规则
+└── Makefile                 # 交叉编译入口
 ```
 
+2026-09-17 清理了无调用方的旧结果/绘图模块、重复模型加载器、旧
+Letterbox、重复类型定义、独立心跳占位和旧配置文件。
+功能归属与保留依据见 [文件整理记录](docs/file-cleanup.md)。
+
+> 本文其他章节包含早期规划，不能作为当前功能完成度的依据。
 
 # 六、系统软件架构
 

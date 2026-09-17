@@ -7,8 +7,11 @@ import socketserver
 import sqlite3
 import struct
 import time
+import base64
+import hashlib
 
-MAX_MESSAGE_SIZE = 65536
+MAX_MESSAGE_SIZE = 12 * 1024 * 1024
+MAX_JPEG_SIZE = 8 * 1024 * 1024
 
 
 def recv_exact(sock, size):
@@ -91,6 +94,98 @@ def reject_constant(value):
     raise ValueError("invalid JSON number: " + value)
 
 
+def store_event(database, message):
+    if message.get("version") != 1 or message.get("type") != "event":
+        raise ValueError("invalid event envelope")
+
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid event metadata")
+
+    if metadata.get("schema_version") != 1:
+        raise ValueError("unsupported event schema")
+
+    detection = metadata.get("detection")
+    validate_message(detection)
+
+    if detection["type"] != "detection":
+        raise ValueError("event requires detection data")
+
+    event_id = metadata.get("event_id")
+
+    if event_id != detection["message_id"]:
+        raise ValueError("event/message ID mismatch")
+
+    image_info = metadata.get("image")
+    if not isinstance(image_info, dict):
+        raise ValueError("invalid image metadata")
+
+    if image_info.get("file") != "image.jpg":
+        raise ValueError("unsupported image filename")
+
+    for key in ("width", "height"):
+        if type(image_info.get(key)) is not int or image_info[key] <= 0:
+            raise ValueError("invalid image dimension")
+
+    encoded = message.get("image_base64")
+    if not isinstance(encoded, str):
+        raise ValueError("missing image_base64")
+
+    if len(encoded) > ((MAX_JPEG_SIZE + 2) // 3) * 4:
+        raise ValueError("encoded image too large")
+
+    jpeg = base64.b64decode(encoded, validate=True)
+
+    if not 4 <= len(jpeg) <= MAX_JPEG_SIZE:
+        raise ValueError("invalid JPEG size")
+
+    # 基础文件格式检查；不代表已经完整解码验证 JPEG。
+    if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+        raise ValueError("invalid JPEG markers")
+
+    payload = json.dumps(
+        metadata,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    digest = hashlib.sha256(jpeg).hexdigest()
+    device = detection["device_id"]
+
+    # 图片和元数据在同一个事务中保存，提交完成后才允许 ACK。
+    with database:
+        database.execute(
+            """
+            INSERT OR IGNORE INTO events
+            (device_id, event_id, received_ns, metadata, image_sha256, jpeg)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (device, event_id, time.time_ns(), payload, digest, jpeg),
+        )
+
+        row = database.execute(
+            """
+            SELECT metadata, image_sha256
+            FROM events
+            WHERE device_id=? AND event_id=?
+            """,
+            (device, event_id),
+        ).fetchone()
+
+        if row != (payload, digest):
+            raise ValueError("event ID already exists with different content")
+
+    print(
+        "event saved/confirmed:",
+        device,
+        event_id,
+        "jpeg_bytes=",
+        len(jpeg),
+        flush=True,
+    )
+
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
         print("connected:", self.client_address, flush=True)
@@ -116,6 +211,14 @@ class Handler(socketserver.BaseRequestHandler):
                     body.decode("utf-8"),
                     parse_constant=reject_constant,
                 )
+
+                if not isinstance(message, dict):
+                    raise ValueError("message must be an object")
+
+                if message.get("type") == "event":
+                    store_event(database, message)
+                    self.request.sendall(b"\x06")
+                    continue
 
                 validate_message(message)
 
@@ -204,6 +307,19 @@ def main():
             )
             """
         )
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                device_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                received_ns INTEGER NOT NULL,
+                metadata TEXT NOT NULL,
+                image_sha256 TEXT NOT NULL,
+                jpeg BLOB NOT NULL,
+                PRIMARY KEY (device_id, event_id)
+            )
+            """
+        )        
 
     with Server((args.host, args.port), Handler) as server:
         server.database_path = args.db

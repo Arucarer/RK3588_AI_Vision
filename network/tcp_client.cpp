@@ -1,7 +1,10 @@
 #include "tcp_client.h"
 #include "json_protocol.h"
 #include "common.h"
+#include "event_store.h"
 
+#include <algorithm>
+#include <vector>
 #include <arpa/inet.h>
 #include <atomic>
 #include <cerrno>
@@ -21,7 +24,8 @@ const size_t QUEUE_CAPACITY = 32;
 const int IO_TIMEOUT_MS = 3000;
 const int RETRY_INTERVAL_MS = 2000;
 const int HEARTBEAT_INTERVAL_MS = 5000;
-const size_t MAX_MESSAGE_SIZE = 65536;
+const size_t MAX_MESSAGE_SIZE = 12 * 1024 * 1024;
+const int EVENT_TIMEOUT_MS = 10000;
 
 struct PendingResult
 {
@@ -39,6 +43,8 @@ bool started = false;
 std::string server_ip;
 std::string device_id;
 std::string session_id;
+std::string event_directory;
+std::string event_target;
 int server_port = 0;
 
 /* 由 queue_mutex 保护 */
@@ -217,7 +223,10 @@ bool send_all(int fd, const void *data, size_t size, long long deadline)
  * 因此 ACK 与当前请求一一对应。
  * 超时后关闭连接，不能继续复用旧连接的 ACK。
  */
-bool send_and_confirm(int fd, const std::string &json)
+bool send_and_confirm(
+    int fd,
+    const std::string &json,
+    int timeout_ms = IO_TIMEOUT_MS)
 {
     if(json.empty() || json.size() > MAX_MESSAGE_SIZE)
     {
@@ -226,7 +235,7 @@ bool send_and_confirm(int fd, const std::string &json)
 
     const uint32_t length = htonl(static_cast<uint32_t>(json.size()));
 
-    const long long deadline = monotonic_us() + IO_TIMEOUT_MS * 1000LL;
+    const long long deadline = monotonic_us() + timeout_ms * 1000LL;
 
     if(!send_all(fd, &length, sizeof(length), deadline) ||
        !send_all(fd, json.data(), json.size(), deadline))
@@ -260,10 +269,94 @@ bool send_and_confirm(int fd, const std::string &json)
     return false;
 }
 
+/*
+ * 每次最多尝试一个事件。
+ * 游标轮转，避免一个坏事件阻塞其他事件。
+ *
+ * true：连接仍可继续使用
+ * false：发送或 ACK 失败，调用方应关闭连接
+ */
+bool upload_one_event(int fd, std::string &cursor)
+{
+    std::vector<std::string> ids;
+
+    if(!event_store_list(event_directory, ids))
+    {
+        LOG_ERR("scan event directory failed: %s", event_directory.c_str());
+        return true;
+    }
+
+    if(ids.empty())
+        return true;
+
+    size_t start = static_cast<size_t>(
+        std::upper_bound(ids.begin(), ids.end(), cursor) - ids.begin());
+
+    for(size_t offset = 0; offset < ids.size(); ++offset)
+    {
+        if(stopping.load())
+            return true;
+
+        const std::string &id = ids[(start + offset) % ids.size()];
+
+        StoredEvent event;
+        event.id = id;
+        event.directory = event_directory + "/" + id;
+
+        if(event_store_is_confirmed(event, event_target))
+            continue;
+
+        cursor = id;
+
+        if(!event_store_load(event_directory, id, event))
+        {
+            LOG_ERR("event read failed; retained: %s", id.c_str());
+            return true;
+        }
+
+        const std::string json =
+            "{\"version\":1,\"type\":\"event\",\"metadata\":" +
+            event.metadata +
+            ",\"image_base64\":\"" +
+            event_store_base64(event.jpeg) + "\"}";
+
+        const long long started_at = monotonic_us();
+
+        if(!send_and_confirm(fd, json, EVENT_TIMEOUT_MS))
+        {
+            LOG_ERR("event upload/ACK failed; retained: %s", id.c_str());
+            return false;
+        }
+
+        if(!event_store_confirm(event, event_target))
+        {
+            /*
+             * 服务端已有数据，但本地确认标记失败。
+             * 下次仍可安全重传，由服务端去重。
+             */
+            LOG_ERR("event ACK received but marker failed: %s", id.c_str());
+            return true;
+        }
+
+        LOG_INFO(
+            "event upload confirmed id=%s jpeg_bytes=%zu time=%.2f ms",
+            id.c_str(),
+            event.jpeg.size(),
+            (monotonic_us() - started_at) / 1000.0
+        );
+
+        return true;
+    }
+
+    return true;
+}
+
 void *network_thread(void *)
 {
     int fd = -1;
     long long next_heartbeat = 0;
+    long long next_event_scan = 0;
+    std::string event_cursor;
 
     while(!stopping.load())
     {
@@ -312,7 +405,36 @@ void *network_thread(void *)
 
             LOG_INFO("TCP heartbeat acknowledged");
         }
+        /*
+         * 每次扫描最多处理一个事件。
+         * 扫描和读取都在网络线程，不进入检测主循环。
+         */
+        if(monotonic_us() >= next_event_scan)
+        {
+            bool connection_ok = true;
 
+            try
+            {
+                connection_ok = upload_one_event(fd, event_cursor);
+            }
+            catch(const std::bad_alloc &)
+            {
+                LOG_ERR("event upload allocation failed; event retained");
+            }
+
+            next_event_scan = monotonic_us() + 1000000LL;
+
+            if(!connection_ok)
+            {
+                close(fd);
+                fd = -1;
+                interruptible_delay(RETRY_INTERVAL_MS);
+                continue;
+            }
+
+            if(stopping.load())
+                break;
+        }
         PendingResult item = {};
         bool have_result = false;
 
@@ -376,9 +498,18 @@ void *network_thread(void *)
 }
 } // namespace
 
-int tcp_client_start(const char *ip, int port, const char *id)
+
+
+
+int tcp_client_start(
+    const char *ip,
+    int port,
+    const char *id,
+    const char *events)
 {
-    if(started || ip == NULL || id == NULL || port < 1 || port > 65535)
+    if(started || ip == NULL || id == NULL ||
+       events == NULL || events[0] != '/' ||
+       port < 1 || port > 65535)
     {
         return -1;
     }
@@ -404,6 +535,10 @@ int tcp_client_start(const char *ip, int port, const char *id)
     server_port = port;
     device_id = id;
     session_id = uuid;
+    event_directory = events;
+
+    event_target = server_ip + "_" + std::to_string(server_port);
+    std::replace(event_target.begin(), event_target.end(), '.', '_');
 
     next_sequence = 0;
     stopping.store(false);

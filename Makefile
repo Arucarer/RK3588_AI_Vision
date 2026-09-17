@@ -50,7 +50,7 @@ BUILD_DIR := build
 BIN_DIR   := bin
 
 NETWORK_DIR := network
-
+STORAGE_DIR := storage
 # ==================== SDK ====================
 
 RK3588_SDK := /home/aaa/rk3588_linux_sdk
@@ -111,6 +111,7 @@ INCLUDES := \
 -I$(RKNN_INCLUDE) \
 -I$(RGA_INCLUDE) \
 -I$(NETWORK_DIR) \
+-I$(STORAGE_DIR) \
 -I$(DRM_INCLUDE)
 
 # ==================== C参数 ====================
@@ -180,14 +181,13 @@ $(IMAGE_DIR)/resize.cpp \
 $(IMAGE_DIR)/color_convert.cpp \
 $(IMAGE_DIR)/roi.cpp \
 $(IMAGE_DIR)/edge_detect.cpp \
-$(IMAGE_DIR)/letterbox.cpp \
-$(AI_DIR)/rknn_model.cpp \
 $(AI_DIR)/rknn_engine.cpp \
 $(AI_DIR)/postprocess.cpp \
 $(DISPLAY_DIR)/display.cpp \
 $(DISPLAY_DIR)/drm_display.cpp \
 $(NETWORK_DIR)/tcp_client.cpp \
 $(NETWORK_DIR)/json_protocol.cpp \
+$(STORAGE_DIR)/event_store.cpp \
 $(DISPLAY_DIR)/rga_display.cpp
 
 # ==================== 目标文件 ====================
