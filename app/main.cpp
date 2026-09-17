@@ -10,6 +10,7 @@
 
 #include "common.h"
 #include "tcp_client.h"
+#include "event_store.h"
 
 #include <time.h>
 
@@ -244,7 +245,17 @@ int main(int argc, char *argv[])
     }
 
     g_debug_logs = config.debug ? 1 : 0;
+    event_store_set_limits(
+        config.event_max_count,
+        config.event_min_free_mb
+    );
 
+    LOG_INFO(
+        "CONFIG event_max_count=%d event_min_free_mb=%d",
+        config.event_max_count,
+        config.event_min_free_mb
+    );
+    
     LOG_INFO("CONFIG model=%s", config.model.c_str());
 
     LOG_INFO("CONFIG confidence=%.3f nms=%.3f", config.confidence, config.nms);

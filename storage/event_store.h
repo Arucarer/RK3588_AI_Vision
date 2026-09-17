@@ -38,4 +38,26 @@ bool event_store_confirm(
 
 std::string event_store_base64(const std::string &bytes);
 
+/*
+ * 必须在启动抓拍和网络线程之前调用。
+ * 配置在运行期间保持不变。
+ */
+void event_store_set_limits(int max_count, int min_free_mb);
+
+/*
+ * 1：允许保存一个新事件
+ * 0：容量不足
+ * -1：检查失败
+ */
+int event_store_check_capacity(const std::string &root);
+
+/*
+ * 只在 TCP 工作线程中调用，与事件上传串行。
+ * 优先清理已确认事件，并恢复未完成的清理任务。
+ */
+void event_store_cleanup(
+    const std::string &root,
+    const std::string &target);
+
+
 #endif

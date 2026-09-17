@@ -142,6 +142,17 @@ bool validate_config(const AppConfig &config, std::string &error)
         error = "report_interval_ms must be 100..60000";
         return false;
     }
+    if(config.event_max_count < 1 || config.event_max_count > 10000)
+    {
+        error = "event_max_count must be 1..10000";
+        return false;
+    }
+
+    if(config.event_min_free_mb < 16 || config.event_min_free_mb > 1048576)
+    {
+        error = "event_min_free_mb must be 16..1048576";
+        return false;
+    }
     return true;
 }
 
@@ -263,6 +274,14 @@ bool load_config(const char *path, AppConfig &config, std::string &error)
             else if(key == "report_interval_ms")
             {
                 candidate.report_interval_ms = parse_integer(value);
+            }
+            else if(key == "event_max_count")
+            {
+                candidate.event_max_count = parse_integer(value);
+            }
+            else if(key == "event_min_free_mb")
+            {
+                candidate.event_min_free_mb = parse_integer(value);
             }
             else
             {

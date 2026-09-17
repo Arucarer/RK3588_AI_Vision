@@ -1,4 +1,5 @@
 #include "display.h"
+#include "event_store.h"
 
 #include "drm_display.h"
 #include "rga_display.h"
@@ -493,32 +494,20 @@ static int snapshot_write_file(const SnapshotTask &task)
         LOG_ERR("create event directory failed: %s", strerror(errno));
         return -1;
     }
+    const int capacity = event_store_check_capacity(root);
 
-    /* 保留容量限制。 临时目录也计入数量，避免异常中断产生的残留无限增长。 */
-    DIR *dir = opendir(root.c_str());
-
-    if(dir == NULL)
+    if(capacity < 0)
     {
-        LOG_ERR("open event directory failed");
+        LOG_ERR("event storage check failed: %s", root.c_str());
         return -1;
     }
 
-    size_t count = 0;
-    struct dirent *entry;
-
-    while((entry = readdir(dir)) != NULL)
+    if(capacity == 0)
     {
-        if(strncmp(entry->d_name, "event_", 6) == 0 || strncmp(entry->d_name, ".pending_", 9) == 0)
-        {
-            count++;
-        }
-    }
-
-    closedir(dir);
-
-    if(count >= 200)
-    {
-        LOG_INFO("event storage limit reached: 200 entries");
+        LOG_INFO(
+            "snapshot skipped: event count limit or low disk space; "
+            "unconfirmed events retained"
+        );
         return 0;
     }
 

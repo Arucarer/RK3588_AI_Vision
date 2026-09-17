@@ -278,6 +278,7 @@ bool send_and_confirm(
  */
 bool upload_one_event(int fd, std::string &cursor)
 {
+    event_store_cleanup(event_directory, event_target);
     std::vector<std::string> ids;
 
     if(!event_store_list(event_directory, ids))

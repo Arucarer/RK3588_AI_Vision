@@ -29,6 +29,12 @@ struct AppConfig
 
     /* 周期采样上报间隔，包括没有检测框的成功帧 */
     int report_interval_ms = 1000;
+    
+    /* 本地事件目录数量上限 */
+    int event_max_count = 200;
+
+    /* 保存新事件前要求保留的可用空间，单位 MiB */
+    int event_min_free_mb = 128;
 };
 
 /* 检查配置内容和数值范围 */
