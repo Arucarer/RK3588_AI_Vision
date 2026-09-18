@@ -7,3 +7,13 @@ bin/
 *.log
 
 model/*.rknn
+
+# Runtime database files
+output/*.sqlite3
+output/*.sqlite3-shm
+output/*.sqlite3-wal
+
+# Runtime database files
+output/*.sqlite3
+output/*.sqlite3-shm
+output/*.sqlite3-wal

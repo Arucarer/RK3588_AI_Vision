@@ -1,0 +1,48 @@
+#!/bin/sh
+
+SCRIPT_DIR=/opt/rk3588_ai/scripts
+
+case "${1:-}" in
+    start)
+        exec "$SCRIPT_DIR/start.sh"
+        ;;
+
+    stop)
+        exec "$SCRIPT_DIR/stop.sh"
+        ;;
+
+    restart)
+        exec "$SCRIPT_DIR/restart.sh"
+        ;;
+
+    status)
+        . "$SCRIPT_DIR/service_common.sh"
+
+        if read_service_pid && is_watchdog_process; then
+            echo "[INFO] AI supervisor running pid=$SERVICE_PID"
+
+            app_pids=$(pidof rk3588_ai_detect 2>/dev/null)
+
+            if [ -n "$app_pids" ]; then
+                echo "[INFO] application pid=$app_pids"
+            else
+                echo "[WARN] application absent; supervisor may be restarting it"
+            fi
+
+            exit 0
+        fi
+
+        if application_running; then
+            echo "[WARN] application running without a recognized supervisor"
+            exit 1
+        fi
+
+        echo "[INFO] AI service stopped"
+        exit 3
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac

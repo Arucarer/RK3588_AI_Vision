@@ -138,10 +138,17 @@ struct DetectionPipeline::Impl
 
     void fail(const char *code, const char *stage)
     {
-        report_alarm(code, stage);
+        /*
+        * 正常退出或流水线已经停止时，不再生成新的故障告警。
+        * 真正运行期间的错误仍然记录。
+        */
+        if(!stopping.load() && g_run_state != RUN_STATE_EXIT)
+        {
+            report_alarm(code, stage);
+        }
+
         halt();
     }
-
     void preprocess_loop()
     {
         try
@@ -155,8 +162,15 @@ struct DetectionPipeline::Impl
 
                 int ret = camera_buffer_pop(&task->frame);
 
-                if(stopping.load())
+                /*
+                * 信号处理函数先设置 RUN_STATE_EXIT。
+                * 采集线程可能先停止缓存，而主线程尚未执行 pipeline.stop()。
+                * 此时属于正常退出，不能上报 camera_stopped。
+                */
+                if(stopping.load() || g_run_state == RUN_STATE_EXIT)
+                {
                     break;
+                }
 
                 if(ret < 0)
                 {
